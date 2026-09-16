@@ -223,11 +223,11 @@ document.addEventListener('DOMContentLoaded', () => {
      ========================================================================== */
 
   async function fetchGitHubChapters() {
-    setLoadingState(true, 'กำลังสตรีมข้อมูลสารบัญจาก GitHub...');
+    setLoadingState(true, 'กำลังสตรีมข้อมูลนิยายทั้งหมดจาก GitHub...');
     
     const [owner, repo] = state.repo.split('/');
-    // Properly format ref parameter for branch names containing slashes
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${state.path}?ref=${encodeURIComponent(state.branch)}`;
+    // Use GitHub Git Trees API (recursive=1) to fetch 100% of all files in branch without pagination limits
+    const treeApiUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(state.branch)}?recursive=1`;
     
     const headers = { 'Accept': 'application/vnd.github.v3+json' };
     if (state.token) {
@@ -235,40 +235,67 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     try {
-      const response = await fetch(apiUrl, { headers });
-      
-      if (!response.ok) {
-        throw new Error(`GitHub API Error: HTTP ${response.status}`);
+      let files = [];
+      const treeResponse = await fetch(treeApiUrl, { headers });
+
+      if (treeResponse.ok) {
+        const treeData = await treeResponse.json();
+        if (treeData && Array.isArray(treeData.tree)) {
+          // Filter all items inside the target path directory
+          const targetPrefix = state.path ? `${state.path.replace(/^\/|\/$/g, '')}/` : '';
+          files = treeData.tree
+            .filter(item => item.type === 'blob' && item.path.startsWith(targetPrefix))
+            .map(item => {
+              const fileName = item.path.substring(targetPrefix.length);
+              return {
+                name: fileName,
+                path: item.path,
+                sha: item.sha,
+                size: item.size || 0,
+                type: 'file',
+                download_url: `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${item.path}`
+              };
+            });
+        }
       }
 
-      const files = await response.json();
-      
-      if (!Array.isArray(files)) {
-        throw new Error('โครงสร้างโฟลเดอร์ไม่ถูกต้อง');
+      // Fallback to standard contents API if tree API returns empty
+      if (files.length === 0) {
+        const contentsApiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${state.path}?ref=${encodeURIComponent(state.branch)}&per_page=100`;
+        const res = await fetch(contentsApiUrl, { headers });
+        if (res.ok) {
+          const contentsData = await res.json();
+          if (Array.isArray(contentsData)) {
+            files = contentsData.filter(f => f.type === 'file');
+          }
+        }
       }
 
-      // Filter and format chapter files
-      state.chapters = files
-        .filter(f => f.type === 'file')
-        .map((file, index) => {
-          const matchNum = file.name.match(/\d+/);
-          const num = matchNum ? parseInt(matchNum[0], 10) : index;
-          
-          return {
-            id: file.sha || `ch-${index}`,
-            name: file.name,
-            number: num,
-            rawUrl: file.download_url || `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${state.path}/${file.name}`,
-            size: file.size || 0,
-            content: null,
-            loaded: false
-          };
-        });
+      if (files.length === 0) {
+        throw new Error('ไม่สามารถดึงข้อมูลรายการไฟล์จาก GitHub API ได้');
+      }
+
+      // Format and sort 100% of chapters
+      state.chapters = files.map((file, index) => {
+        // Extract numbers e.g. 0000, 0001, chapter_12, etc.
+        const matchNum = file.name.match(/\d+/);
+        const num = matchNum ? parseInt(matchNum[0], 10) : index;
+        
+        return {
+          id: file.sha || `ch-${index}`,
+          name: file.name,
+          number: num,
+          rawUrl: file.download_url || `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${state.path}/${file.name}`,
+          size: file.size || 0,
+          content: null,
+          loaded: false
+        };
+      });
 
       sortChapters();
       updateLastSyncTime();
-      showToast(`ดึงข้อมูลสำเร็จ! พบ ${state.chapters.length} บท`, 'success');
-      setLoadingState(false, 'เชื่อมต่อสดสำเร็จ');
+      showToast(`ดึงข้อมูลครบถ้วน! พบทั้งหมด ${state.chapters.length} บท`, 'success');
+      setLoadingState(false, `ดึงข้อมูลครบ 100% (${state.chapters.length} บท)`);
 
       if (state.chapters.length > 0) {
         const lastReadId = localStorage.getItem('gnr_lastReadId');
@@ -283,8 +310,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
     } catch (err) {
-      console.warn('GitHub API Primary fetch warning:', err.message);
-      // Fallback Engine with Direct Raw Probing
+      console.warn('GitHub API Tree fetch warning:', err.message);
       handleFetchFallback(err.message);
     }
   }
