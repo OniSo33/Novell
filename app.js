@@ -659,15 +659,15 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
-    // Always ensure iOS Safari has clear selectable Thai options
-    const defaultIOSOptions = [
-      { id: 'ios_kanya', name: '🇹🇭 กันยา (Kanya - iOS Thai)' },
-      { id: 'ios_siri', name: '🇹🇭 เสียงสิริ / ระบบ (ตามเครื่อง iPhone)' },
+    // Curated Thai Voice options (including Kanya, Siri, Narisa, Standard) for iPhone/iOS Safari & Desktop
+    const curatedThaiOptions = [
+      { id: 'ios_kanya', name: '🇹🇭 เสียงกันยา (Kanya - iOS Thai)' },
+      { id: 'ios_siri', name: '🇹🇭 เสียงสิริ (Siri Voice - ตามเครื่อง iPhone)' },
+      { id: 'ios_narisa', name: '🇹🇭 เสียงนริศรา (Narisa - iOS Thai)' },
       { id: 'ios_std', name: '🇹🇭 เสียงภาษาไทยมาตรฐาน (th-TH)' }
     ];
 
-    defaultIOSOptions.forEach(opt => {
-      // Avoid duplicate if URI already exists
+    curatedThaiOptions.forEach(opt => {
       const exists = Array.from(elements.ttsVoiceSelect.options).some(o => o.value === opt.id || o.textContent === opt.name);
       if (!exists) {
         const option = document.createElement('option');
@@ -794,7 +794,12 @@ document.addEventListener('DOMContentLoaded', () => {
     utterance.volume = state.ttsMuted ? 0 : 1;
 
     if (state.selectedVoiceURI && state.voices.length > 0) {
-      const foundVoice = state.voices.find(v => v.voiceURI === state.selectedVoiceURI);
+      const searchKey = state.selectedVoiceURI.replace('ios_', '').toLowerCase();
+      const foundVoice = state.voices.find(v => 
+        v.voiceURI === state.selectedVoiceURI || 
+        v.name.toLowerCase().includes(searchKey) ||
+        v.voiceURI.toLowerCase().includes(searchKey)
+      );
       if (foundVoice) {
         utterance.voice = foundVoice;
         if (foundVoice.lang) utterance.lang = foundVoice.lang;
