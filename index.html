@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub Novel Data Fetcher & Reader</title>
+  <meta name="description" content="ระบบดึงข้อมูลและอ่านนิยายจาก GitHub Repository OniSo33/Onisoo สดใหม่ตลอดเวลา">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Prompt:wght@300;400;500;600;700&family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="theme-cyber-dark">
+
+  <!-- Top Navigation Bar -->
+  <header class="navbar">
+    <div class="nav-brand">
+      <div class="logo-icon">
+        <i class="fa-solid fa-book-bookmark"></i>
+      </div>
+      <div class="brand-text">
+        <h1>OniSo<span class="highlight">Reader</span></h1>
+        <span class="sub-badge"><i class="fa-brands fa-github"></i> OniSo33/Onisoo</span>
+      </div>
+    </div>
+
+    <!-- Status & Quick Controls -->
+    <div class="nav-controls">
+      <div class="live-status-pill" id="liveStatusPill">
+        <span class="pulse-dot"></span>
+        <span class="status-text" id="statusText">เชื่อมต่อระบบ</span>
+      </div>
+
+      <button id="btnSync" class="btn btn-primary" title="ดึงข้อมูลใหม่จาก GitHub">
+        <i class="fa-solid fa-rotate-right" id="syncIcon"></i>
+        <span>ดึงข้อมูลล่าสุด</span>
+      </button>
+
+      <button id="btnSettings" class="btn btn-icon" title="ตั้งค่าระบบ">
+        <i class="fa-solid fa-gear"></i>
+      </button>
+
+      <button id="btnToggleSidebar" class="btn btn-icon mobile-only" title="เมนูบทนิยาย">
+        <i class="fa-solid fa-bars"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Reading Progress Bar -->
+  <div class="reading-progress-container">
+    <div class="reading-progress-bar" id="progressBar"></div>
+  </div>
+
+  <!-- Main Application Container -->
+  <div class="app-layout">
+
+    <!-- Sidebar: Chapter List & Filters -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-title">
+          <i class="fa-solid fa-list-ol"></i>
+          <h2>สารบัญบทนิยาย</h2>
+          <span class="chapter-count-badge" id="chapterCountBadge">0 บท</span>
+        </div>
+
+        <div class="search-box">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input type="text" id="searchInput" placeholder="ค้นหาบทหรือเนื้อหา...">
+          <button id="btnClearSearch" class="btn-clear hidden">&times;</button>
+        </div>
+
+        <div class="sidebar-toolbar">
+          <button id="btnSortAsc" class="btn-tool active" title="เรียงจากน้อยไปมาก">
+            <i class="fa-solid fa-arrow-down-1-9"></i>
+          </button>
+          <button id="btnSortDesc" class="btn-tool" title="เรียงจากมากไปน้อย">
+            <i class="fa-solid fa-arrow-up-9-1"></i>
+          </button>
+          <button id="btnFilterBookmarked" class="btn-tool" title="เฉพาะบทที่คั่นไว้">
+            <i class="fa-solid fa-bookmark"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Chapter Items List -->
+      <div class="chapter-list" id="chapterList">
+        <div class="skeleton-loader">
+          <div class="skeleton-item"></div>
+          <div class="skeleton-item"></div>
+          <div class="skeleton-item"></div>
+          <div class="skeleton-item"></div>
+        </div>
+      </div>
+
+      <!-- Sidebar Footer Info -->
+      <div class="sidebar-footer">
+        <div class="source-info">
+          <i class="fa-solid fa-code-branch"></i>
+          <span class="branch-name" title="Branch">claude/data-storage-location-85vk0x</span>
+        </div>
+        <div class="last-sync-time" id="lastSyncTime">อัปเดตล่าสุด: -</div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area: Reader & Inspector -->
+    <main class="content-area">
+
+      <!-- View Selector Tabs -->
+      <div class="view-tabs">
+        <button class="tab-btn active" data-tab="readerTab">
+          <i class="fa-solid fa-book-open"></i> โหมดอ่านนิยาย
+        </button>
+        <button class="tab-btn" data-tab="inspectorTab">
+          <i class="fa-solid fa-code"></i> ตรวจสอบข้อมูลดิบ (Scraper)
+        </button>
+        <button class="tab-btn" data-tab="exporterTab">
+          <i class="fa-solid fa-file-export"></i> ส่งออกข้อมูล (Export)
+        </button>
+      </div>
+
+      <!-- TAB 1: Reader Tab -->
+      <div class="tab-content active" id="readerTab">
+        <!-- Floating Reader Toolbar -->
+        <div class="reader-toolbar">
+          <div class="toolbar-group">
+            <button id="btnPrevChapter" class="btn btn-secondary" disabled>
+              <i class="fa-solid fa-chevron-left"></i> บทก่อนหน้า
+            </button>
+            <button id="btnNextChapter" class="btn btn-secondary" disabled>
+              บทถัดไป <i class="fa-solid fa-chevron-right"></i>
+            </button>
+          </div>
+
+          <div class="toolbar-group">
+            <button id="btnBookmark" class="btn btn-icon-text" title="คั่นหน้านี้">
+              <i class="fa-regular fa-bookmark" id="bookmarkIcon"></i>
+              <span>คั่นหน้า</span>
+            </button>
+
+            <!-- Expanded TTS Toolbar -->
+            <div class="tts-control-bar" id="ttsControlBar">
+              <button id="btnTTSPlayPause" class="btn btn-primary" title="เล่น / หยุดชั่วคราว / อ่านต่อ">
+                <i class="fa-solid fa-play" id="ttsPlayIcon"></i>
+                <span id="ttsPlayText">อ่านให้ฟัง</span>
+              </button>
+
+              <button id="btnTTSStop" class="btn btn-secondary" title="หยุดอ่านและกลับไปจุดเริ่มต้น">
+                <i class="fa-solid fa-square" style="color: #f87171;"></i>
+                <span>หยุด</span>
+              </button>
+
+              <button id="btnTTSMute" class="btn btn-icon-text" title="เปิด/ปิดเสียง">
+                <i class="fa-solid fa-volume-high" id="ttsMuteIcon"></i>
+                <span id="ttsMuteText">เสียงเปิด</span>
+              </button>
+
+              <div class="tts-speed-selector" id="ttsSpeedContainer">
+                <i class="fa-solid fa-gauge-high"></i>
+                <select id="ttsSpeedSelect" title="ความเร็วเสียงอ่าน">
+                  <option value="0.75">0.75x</option>
+                  <option value="1.0" selected>1.0x (ปกติ)</option>
+                  <option value="1.25">1.25x</option>
+                  <option value="1.5">1.5x</option>
+                  <option value="1.75">1.75x</option>
+                  <option value="2.0">2.0x (เร็ว)</option>
+                </select>
+              </div>
+
+              <div class="tts-voice-selector" id="ttsVoiceContainer">
+                <i class="fa-solid fa-user-gear"></i>
+                <select id="ttsVoiceSelect" title="เลือกเสียงอ่านภาษาไทย">
+                  <option value="">กำลังโหลดเสียงไทย...</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Display Settings -->
+          <div class="toolbar-group reader-style-tools">
+            <div class="style-control font-size-control">
+              <button id="btnFontDec" class="btn-mini" title="ลดขนาดตัวอักษร">A-</button>
+              <span id="fontSizeDisplay">18px</span>
+              <button id="btnFontInc" class="btn-mini" title="เพิ่มขนาดตัวอักษร">A+</button>
+            </div>
+
+            <div class="style-control theme-selector">
+              <button class="theme-dot theme-cyber" data-theme="theme-cyber-dark" title="Cyber Dark"></button>
+              <button class="theme-dot theme-sepia" data-theme="theme-sepia" title="Warm Sepia"></button>
+              <button class="theme-dot theme-oled" data-theme="theme-oled" title="OLED Midnight"></button>
+              <button class="theme-dot theme-light" data-theme="theme-light" title="Clean Light"></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Reader Container -->
+        <article class="reader-card" id="readerCard">
+          <header class="chapter-header">
+            <div class="chapter-meta-top">
+              <span class="meta-badge" id="chapterCategory"><i class="fa-solid fa-folder"></i> chapters</span>
+              <span class="meta-badge" id="wordCountBadge"><i class="fa-solid fa-file-lines"></i> 0 คำ</span>
+              <span class="meta-badge" id="readTimeBadge"><i class="fa-solid fa-clock"></i> ~0 นาที</span>
+            </div>
+            <h1 class="chapter-title" id="chapterTitle">กรุณาเลือกรทนิยายจากสารบัญ</h1>
+            <div class="chapter-subtitle" id="chapterSubtitle">สตรีมข้อมูลสดจาก GitHub Repository</div>
+          </header>
+
+          <hr class="divider">
+
+          <!-- Chapter Main Body Content -->
+          <div class="chapter-body font-prompt" id="chapterBody">
+            <div class="welcome-placeholder">
+              <div class="placeholder-icon">
+                <i class="fa-solid fa-cloud-arrow-down"></i>
+              </div>
+              <h3>กำลังเตรียมเชื่อมต่อ GitHub Data API...</h3>
+              <p>ระบบจะทำการดึงข้อมูลนิยายล่าสุดจาก <code>OniSo33/Onisoo</code> โดยอัตโนมัติ</p>
+            </div>
+          </div>
+
+          <footer class="chapter-footer">
+            <button id="btnPrevChapterFooter" class="btn btn-secondary btn-lg" disabled>
+              <i class="fa-solid fa-chevron-left"></i> ตอนก่อนหน้า
+            </button>
+            <button id="btnNextChapterFooter" class="btn btn-secondary btn-lg" disabled>
+              ตอนถัดไป <i class="fa-solid fa-chevron-right"></i>
+            </button>
+          </footer>
+        </article>
+      </div>
+
+      <!-- TAB 2: Scraper / Raw Data Inspector Tab -->
+      <div class="tab-content" id="inspectorTab">
+        <div class="inspector-card">
+          <div class="inspector-header">
+            <div>
+              <h3><i class="fa-solid fa-terminal"></i> Data Scraper Payload Inspector</h3>
+              <p>แสดงโครงสร้างไฟล์ JSON/Text ดิบที่สกัดมาจาก GitHub Repository</p>
+            </div>
+            <div class="inspector-actions">
+              <button id="btnCopyRaw" class="btn btn-secondary">
+                <i class="fa-regular fa-copy"></i> คัดลอก JSON ดิบ
+              </button>
+            </div>
+          </div>
+
+          <!-- Metadata Overview Cards -->
+          <div class="meta-grid">
+            <div class="meta-card">
+              <span class="meta-label">ชื่อไฟล์ต้นทาง</span>
+              <span class="meta-value" id="inspectFileName">-</span>
+            </div>
+            <div class="meta-card">
+              <span class="meta-label">ขนาดไฟล์ (Bytes)</span>
+              <span class="meta-value" id="inspectFileSize">-</span>
+            </div>
+            <div class="meta-card">
+              <span class="meta-label">จำนวนตัวอักษร</span>
+              <span class="meta-value" id="inspectCharCount">-</span>
+            </div>
+            <div class="meta-card">
+              <span class="meta-label">URL ดึงข้อมูล Raw</span>
+              <span class="meta-value text-ellipsis" id="inspectRawUrl">-</span>
+            </div>
+          </div>
+
+          <!-- Raw Code Container -->
+          <div class="code-viewer-container">
+            <pre><code id="rawCodeViewer">// เลือกบทเพื่อดู Payload ดิบที่สกัดได้ที่นี่</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: Exporter Tab -->
+      <div class="tab-content" id="exporterTab">
+        <div class="exporter-card">
+          <div class="exporter-header">
+            <h3><i class="fa-solid fa-box-archive"></i> สกัดและส่งออกข้อมูลนิยาย (Bulk Exporter)</h3>
+            <p>ดาวน์โหลดนิยายทั้งหมดที่ดึงมาเก็บไว้ในเครื่อง เพื่ออ่านออฟไลน์หรือนำไปประมวลผลต่อ</p>
+          </div>
+
+          <div class="export-options-grid">
+            <div class="export-card">
+              <div class="export-icon"><i class="fa-solid fa-file-lines"></i></div>
+              <h4>รวมบททั้งหมดเป็น TXT</h4>
+              <p>ดาวน์โหลดเนื้อหานิยายทุกตอนที่ดึงได้ รวมเป็นไฟล์ข้อความ (.txt) ไฟล์เดียว</p>
+              <button id="btnExportTxt" class="btn btn-primary btn-block">
+                <i class="fa-solid fa-download"></i> ดาวน์โหลด (.txt)
+              </button>
+            </div>
+
+            <div class="export-card">
+              <div class="export-icon"><i class="fa-solid fa-code"></i></div>
+              <h4>ชุดข้อมูล JSON ดิบ</h4>
+              <p>ส่งออกข้อมูลนิยายทั้งหมดในรูปแบบ JSON Dataset สมบูรณ์พร้อม Metadata</p>
+              <button id="btnExportJson" class="btn btn-primary btn-block">
+                <i class="fa-solid fa-download"></i> ดาวน์โหลด (.json)
+              </button>
+            </div>
+
+            <div class="export-card">
+              <div class="export-icon"><i class="fa-solid fa-database"></i></div>
+              <h4>ล้างข้อมูลแคชออฟไลน์</h4>
+              <p>ล้างบทนิยายที่เคยบันทึกไว้ใน LocalStorage และดึงข้อมูลใหม่สดจาก GitHub</p>
+              <button id="btnClearCache" class="btn btn-danger btn-block">
+                <i class="fa-solid fa-trash"></i> ล้างแคชทั้งหมด
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Settings Modal -->
+  <div class="modal-overlay hidden" id="settingsModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3><i class="fa-solid fa-sliders"></i> ตั้งค่าการดึงข้อมูล & หน้าจอ</h3>
+        <button id="btnCloseSettings" class="btn-close">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="setting-item">
+          <label for="repoInput">GitHub Repository</label>
+          <input type="text" id="repoInput" value="OniSo33/Onisoo" placeholder="owner/repo">
+        </div>
+
+        <div class="setting-item">
+          <label for="branchInput">Branch & Path</label>
+          <input type="text" id="branchInput" value="claude/data-storage-location-85vk0x" placeholder="branch name">
+        </div>
+
+        <div class="setting-item">
+          <label for="pathInput">Folder Path</label>
+          <input type="text" id="pathInput" value="chapters" placeholder="directory inside repo">
+        </div>
+
+        <div class="setting-item">
+          <label for="tokenInput">GitHub Personal Access Token (ไม่บังคับ)</label>
+          <input type="password" id="tokenInput" placeholder="ghp_xxxxxxxxxxxx (ช่วยเพิ่ม Rate Limit API)">
+          <small class="help-text">ใส่ Token กรณีต้องการดึงข้อมูลถี่เกิน 60 ครั้ง/ชั่วโมง</small>
+        </div>
+
+        <div class="setting-item">
+          <label for="fontFamilySelect">รูปแบบฟอนต์นิยาย</label>
+          <select id="fontFamilySelect">
+            <option value="font-prompt">Prompt (ร่วมสมัย อ่านง่าย)</option>
+            <option value="font-sarabun">Sarabun (เป็นทางการ สบายตา)</option>
+            <option value="font-inter">Inter (สไตล์สากล)</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <label for="lineHeightSelect">ระยะห่างระหว่างบรรทัด</label>
+          <select id="lineHeightSelect">
+            <option value="1.6">ปานกลาง (1.6x)</option>
+            <option value="1.9" selected>กว้างสบายตา (1.9x)</option>
+            <option value="2.2">กว้างพิเศษ (2.2x)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="btnSaveSettings" class="btn btn-primary">
+          <i class="fa-solid fa-floppy-disk"></i> บันทึกการตั้งค่า
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
