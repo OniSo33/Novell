@@ -968,6 +968,8 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.btnTTSMute.addEventListener('click', toggleTTSMute);
     elements.ttsSpeedSelect.addEventListener('change', (e) => changeTTSSpeed(e.target.value));
     elements.ttsVoiceSelect.addEventListener('change', (e) => changeTTSVoice(e.target.value));
+    elements.ttsVoiceSelect.addEventListener('focus', populateVoices);
+    elements.ttsVoiceSelect.addEventListener('click', populateVoices);
 
     // Font size adjustments
     elements.btnFontInc.addEventListener('click', () => {
