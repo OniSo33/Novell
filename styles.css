@@ -185,6 +185,43 @@ code, pre {
   gap: 12px;
 }
 
+/* Quick URL Scraper Input */
+.quick-url-fetcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  padding: 4px 6px 4px 12px;
+  border-radius: var(--radius-full);
+  transition: var(--transition);
+}
+
+.quick-url-fetcher:focus-within {
+  border-color: var(--accent-cyan);
+  box-shadow: var(--shadow-glow);
+}
+
+.quick-url-fetcher i {
+  color: var(--accent-cyan);
+  font-size: 1.1rem;
+}
+
+.quick-url-fetcher input {
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  font-size: 0.85rem;
+  outline: none;
+  width: 280px;
+}
+
+.quick-url-fetcher .btn-sm {
+  padding: 4px 12px;
+  font-size: 0.78rem;
+  border-radius: var(--radius-full);
+}
+
 .live-status-pill {
   display: flex;
   align-items: center;

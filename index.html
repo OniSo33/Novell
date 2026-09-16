@@ -14,7 +14,7 @@
   <!-- FontAwesome Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   
-  <link rel="stylesheet" href="styles.css?v=1.0.7">
+  <link rel="stylesheet" href="styles.css?v=1.1.0">
 </head>
 <body class="theme-cyber-dark">
 
@@ -32,6 +32,15 @@
 
     <!-- Status & Quick Controls -->
     <div class="nav-controls">
+      <div class="quick-url-fetcher" id="quickUrlContainer">
+        <i class="fa-brands fa-github"></i>
+        <input type="text" id="quickUrlInput" placeholder="วางลิงก์ GitHub หรือ owner/repo..." title="วาง URL ของ GitHub Repo ใดๆ เพื่อดึงข้อมูลทันที">
+        <button id="btnQuickFetch" class="btn btn-primary btn-sm" title="ดึงข้อมูลจาก URL นี้">
+          <i class="fa-solid fa-arrow-down-to-bracket"></i>
+          <span>ดึงข้อมูล</span>
+        </button>
+      </div>
+
       <div class="live-status-pill" id="liveStatusPill">
         <span class="pulse-dot"></span>
         <span class="status-text" id="statusText">เชื่อมต่อระบบ</span>
@@ -334,7 +343,7 @@
 
         <div class="setting-item">
           <label for="branchInput">Branch & Path</label>
-          <input type="text" id="branchInput" value="claude/data-storage-location-85vk0x" placeholder="branch name">
+          <input type="text" id="branchInput" value="claude/read-4d3wcj" placeholder="branch name">
         </div>
 
         <div class="setting-item">
@@ -378,6 +387,6 @@
   <!-- Toast Notification Container -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=1.0.7"></script>
+  <script src="app.js?v=1.1.0"></script>
 </body>
 </html>
