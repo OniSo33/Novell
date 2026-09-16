@@ -647,28 +647,41 @@ document.addEventListener('DOMContentLoaded', () => {
       v.lang.toLowerCase().startsWith('th')
     );
 
-    if (thaiVoices.length === 0) {
-      // iOS Safari fallback option
-      const opt = document.createElement('option');
-      opt.value = 'default_th';
-      opt.textContent = '🇹🇭 เสียงพากย์ไทย (ตามเครื่อง iPhone)';
-      elements.ttsVoiceSelect.appendChild(opt);
-      return;
+    if (thaiVoices.length > 0) {
+      thaiVoices.forEach(voice => {
+        const option = document.createElement('option');
+        option.value = voice.voiceURI;
+        option.textContent = `🇹🇭 ${voice.name.replace(/th[-_]TH/gi, '').trim() || 'เสียงพากย์ไทย'}`;
+        if (voice.voiceURI === state.selectedVoiceURI) {
+          option.selected = true;
+        }
+        elements.ttsVoiceSelect.appendChild(option);
+      });
     }
 
-    thaiVoices.forEach(voice => {
-      const option = document.createElement('option');
-      option.value = voice.voiceURI;
-      option.textContent = `🇹🇭 ${voice.name.replace(/th[-_]TH/gi, '').trim() || 'เสียงพากย์ไทย'}`;
-      
-      if (voice.voiceURI === state.selectedVoiceURI) {
-        option.selected = true;
+    // Always ensure iOS Safari has clear selectable Thai options
+    const defaultIOSOptions = [
+      { id: 'ios_kanya', name: '🇹🇭 กันยา (Kanya - iOS Thai)' },
+      { id: 'ios_siri', name: '🇹🇭 เสียงสิริ / ระบบ (ตามเครื่อง iPhone)' },
+      { id: 'ios_std', name: '🇹🇭 เสียงภาษาไทยมาตรฐาน (th-TH)' }
+    ];
+
+    defaultIOSOptions.forEach(opt => {
+      // Avoid duplicate if URI already exists
+      const exists = Array.from(elements.ttsVoiceSelect.options).some(o => o.value === opt.id || o.textContent === opt.name);
+      if (!exists) {
+        const option = document.createElement('option');
+        option.value = opt.id;
+        option.textContent = opt.name;
+        if (opt.id === state.selectedVoiceURI) {
+          option.selected = true;
+        }
+        elements.ttsVoiceSelect.appendChild(option);
       }
-      elements.ttsVoiceSelect.appendChild(option);
     });
 
-    if (!state.selectedVoiceURI && thaiVoices.length > 0) {
-      state.selectedVoiceURI = thaiVoices[0].voiceURI;
+    if (!state.selectedVoiceURI && elements.ttsVoiceSelect.options.length > 0) {
+      state.selectedVoiceURI = elements.ttsVoiceSelect.options[0].value;
       elements.ttsVoiceSelect.value = state.selectedVoiceURI;
     }
   }
@@ -681,13 +694,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Synchronous iOS Safari Gesture Unlock
     try {
+      if (state.synth.paused) {
+        state.synth.resume();
+      }
       const unlockUtterance = new SpeechSynthesisUtterance(' ');
-      unlockUtterance.volume = 0.01;
+      unlockUtterance.volume = 0.05;
       state.synth.speak(unlockUtterance);
     } catch (e) {}
 
     if (state.ttsState === 'idle') {
       state.ttsCurrentIndex = 0;
+      showToast('💡 ทริค iPhone: หากไม่ได้ยินเสียง ให้เปิดปุ่มสวิตช์เสียงข้างเครื่อง และเพิ่มเสียงขึ้นครับ', 'info');
       startTTSReading();
     } else if (state.ttsState === 'playing') {
       pauseTTSReading();
@@ -776,7 +793,7 @@ document.addEventListener('DOMContentLoaded', () => {
     utterance.rate = state.ttsRate;
     utterance.volume = state.ttsMuted ? 0 : 1;
 
-    if (state.selectedVoiceURI && state.selectedVoiceURI !== 'default_th' && state.voices.length > 0) {
+    if (state.selectedVoiceURI && state.voices.length > 0) {
       const foundVoice = state.voices.find(v => v.voiceURI === state.selectedVoiceURI);
       if (foundVoice) {
         utterance.voice = foundVoice;
