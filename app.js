@@ -645,15 +645,18 @@ document.addEventListener('DOMContentLoaded', () => {
     );
 
     if (thaiVoices.length === 0) {
-      // Fallback if browser hasn't loaded voices or OS has default voice
-      elements.ttsVoiceSelect.innerHTML = '<option value="">เสียงภาษาไทย (ตามระบบ)</option>';
+      // iOS Safari fallback option
+      const opt = document.createElement('option');
+      opt.value = 'default_th';
+      opt.textContent = '🇹🇭 เสียงพากย์ไทย (ตามเครื่อง iPhone)';
+      elements.ttsVoiceSelect.appendChild(opt);
       return;
     }
 
     thaiVoices.forEach(voice => {
       const option = document.createElement('option');
       option.value = voice.voiceURI;
-      option.textContent = `🇹🇭 ${voice.name}`;
+      option.textContent = `🇹🇭 ${voice.name.replace(/th[-_]TH/gi, '').trim() || 'เสียงพากย์ไทย'}`;
       
       if (voice.voiceURI === state.selectedVoiceURI) {
         option.selected = true;
@@ -661,7 +664,6 @@ document.addEventListener('DOMContentLoaded', () => {
       elements.ttsVoiceSelect.appendChild(option);
     });
 
-    // Auto select first Thai voice if none selected
     if (!state.selectedVoiceURI && thaiVoices.length > 0) {
       state.selectedVoiceURI = thaiVoices[0].voiceURI;
       elements.ttsVoiceSelect.value = state.selectedVoiceURI;
@@ -757,13 +759,16 @@ document.addEventListener('DOMContentLoaded', () => {
     state.synth.cancel();
 
     const utterance = new SpeechSynthesisUtterance(targetText);
-    utterance.lang = 'th-TH';
+    utterance.lang = 'th-TH'; // Always set th-TH explicitly for iOS Safari
     utterance.rate = state.ttsRate;
     utterance.volume = state.ttsMuted ? 0 : 1;
 
-    if (state.selectedVoiceURI && state.voices.length > 0) {
+    if (state.selectedVoiceURI && state.selectedVoiceURI !== 'default_th' && state.voices.length > 0) {
       const foundVoice = state.voices.find(v => v.voiceURI === state.selectedVoiceURI);
-      if (foundVoice) utterance.voice = foundVoice;
+      if (foundVoice) {
+        utterance.voice = foundVoice;
+        if (foundVoice.lang) utterance.lang = foundVoice.lang;
+      }
     }
 
     utterance.onend = () => {
