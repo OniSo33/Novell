@@ -36,8 +36,12 @@ document.addEventListener('DOMContentLoaded', () => {
     ttsCurrentIndex: 0,
     ttsParagraphElements: [],
     synth: window.speechSynthesis || null,
-    currentUtterance: null
+    currentUtterance: null,
+    
+    // Background Audio Keeper for Screen Lock
+    silentAudio: new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=')
   };
+  state.silentAudio.loop = true;
 
   // DOM Elements Selector Cache
   const elements = {
@@ -633,20 +637,23 @@ document.addEventListener('DOMContentLoaded', () => {
     state.voices = state.synth.getVoices();
     elements.ttsVoiceSelect.innerHTML = '';
 
-    const thaiVoices = state.voices.filter(v => v.lang.toLowerCase().includes('th') || v.name.toLowerCase().includes('thai'));
-    const otherVoices = state.voices.filter(v => !thaiVoices.includes(v));
-    const sortedVoices = [...thaiVoices, ...otherVoices];
+    // Filter ONLY Thai voices
+    const thaiVoices = state.voices.filter(v => 
+      v.lang.toLowerCase().includes('th') || 
+      v.name.toLowerCase().includes('thai') ||
+      v.lang.toLowerCase().startsWith('th')
+    );
 
-    if (sortedVoices.length === 0) {
-      elements.ttsVoiceSelect.innerHTML = '<option value="">เสียงเริ่มต้นระบบ</option>';
+    if (thaiVoices.length === 0) {
+      // Fallback if browser hasn't loaded voices or OS has default voice
+      elements.ttsVoiceSelect.innerHTML = '<option value="">เสียงภาษาไทย (ตามระบบ)</option>';
       return;
     }
 
-    sortedVoices.forEach(voice => {
+    thaiVoices.forEach(voice => {
       const option = document.createElement('option');
       option.value = voice.voiceURI;
-      const isThai = voice.lang.toLowerCase().includes('th') || voice.name.toLowerCase().includes('thai');
-      option.textContent = `${isThai ? '🇹🇭 ' : ''}${voice.name} (${voice.lang})`;
+      option.textContent = `🇹🇭 ${voice.name}`;
       
       if (voice.voiceURI === state.selectedVoiceURI) {
         option.selected = true;
@@ -654,6 +661,7 @@ document.addEventListener('DOMContentLoaded', () => {
       elements.ttsVoiceSelect.appendChild(option);
     });
 
+    // Auto select first Thai voice if none selected
     if (!state.selectedVoiceURI && thaiVoices.length > 0) {
       state.selectedVoiceURI = thaiVoices[0].voiceURI;
       elements.ttsVoiceSelect.value = state.selectedVoiceURI;
@@ -679,7 +687,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function startTTSReading() {
     state.ttsParagraphElements = Array.from(elements.chapterBody.querySelectorAll('p'));
     if (state.ttsParagraphElements.length === 0) {
-      // Fallback if no <p> tags found
       showToast('ไม่มีเนื้อหาบรรทัดสำหรับอ่าน', 'error');
       return;
     }
@@ -689,8 +696,36 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     state.ttsState = 'playing';
+    
+    // Play silent audio loop to keep iOS/Android audio session active when screen locks
+    if (state.silentAudio) {
+      state.silentAudio.play().catch(() => {});
+    }
+
+    setupMediaSession();
     updateTTSUI();
     speakCurrentParagraph();
+  }
+
+  function setupMediaSession() {
+    if ('mediaSession' in navigator && state.currentChapterData) {
+      const title = state.currentChapterData.parsedData.title || `ตอนที่ ${state.currentChapterData.chapterItem.number}`;
+      
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: title,
+        artist: 'OniSo33 Novel Reader',
+        album: state.repo
+      });
+
+      navigator.mediaSession.setActionHandler('play', () => handleTTSPlayPause());
+      navigator.mediaSession.setActionHandler('pause', () => pauseTTSReading());
+      navigator.mediaSession.setActionHandler('stop', () => stopTTSReading());
+      
+      try {
+        navigator.mediaSession.setActionHandler('previoustrack', () => loadChapter(state.currentChapterIndex - 1));
+        navigator.mediaSession.setActionHandler('nexttrack', () => loadChapter(state.currentChapterIndex + 1));
+      } catch (e) {}
+    }
   }
 
   function speakCurrentParagraph() {
@@ -714,13 +749,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const targetText = state.ttsParagraphElements[state.ttsCurrentIndex].textContent.trim();
     if (!targetText) {
-      // Skip empty paragraphs
       state.ttsCurrentIndex++;
       speakCurrentParagraph();
       return;
     }
 
-    state.synth.cancel(); // Stop any pending speech frame
+    state.synth.cancel();
 
     const utterance = new SpeechSynthesisUtterance(targetText);
     utterance.lang = 'th-TH';
@@ -753,7 +787,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function pauseTTSReading() {
     if (state.synth && state.ttsState === 'playing') {
-      state.synth.cancel(); // Cancel current utterance speech, but keep state.ttsCurrentIndex
+      state.synth.cancel();
+      if (state.silentAudio) state.silentAudio.pause();
       state.ttsState = 'paused';
       updateTTSUI();
       showToast(`หยุดอ่านชั่วคราว ที่ย่อหน้าที่ ${state.ttsCurrentIndex + 1}`, 'info');
@@ -763,6 +798,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function resumeTTSReading() {
     if (state.synth && state.ttsState === 'paused') {
       state.ttsState = 'playing';
+      if (state.silentAudio) state.silentAudio.play().catch(() => {});
       updateTTSUI();
       speakCurrentParagraph();
       showToast(`อ่านต่อจากย่อหน้าที่ ${state.ttsCurrentIndex + 1}...`, 'info');
@@ -772,6 +808,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function stopTTSReading() {
     if (state.synth) {
       state.synth.cancel();
+      if (state.silentAudio) state.silentAudio.pause();
       resetTTSState();
       showToast('หยุดการอ่านเสียงและกลับไปจุดเริ่มต้นแล้ว', 'info');
     }
@@ -817,6 +854,10 @@ document.addEventListener('DOMContentLoaded', () => {
     state.currentUtterance = null;
     state.ttsCurrentIndex = 0;
     
+    if (state.silentAudio) {
+      state.silentAudio.pause();
+    }
+
     // Remove all highlights
     if (state.ttsParagraphElements) {
       state.ttsParagraphElements.forEach(p => p.classList.remove('tts-active-line'));
