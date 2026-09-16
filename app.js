@@ -640,7 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
     state.voices = state.synth.getVoices();
     elements.ttsVoiceSelect.innerHTML = '';
 
-    // Filter ONLY Thai voices
+    // Filter ONLY actual native Thai voices returned by browser/OS
     const thaiVoices = state.voices.filter(v => 
       v.lang.toLowerCase().includes('th') || 
       v.name.toLowerCase().includes('thai') ||
@@ -648,41 +648,27 @@ document.addEventListener('DOMContentLoaded', () => {
     );
 
     if (thaiVoices.length > 0) {
-      thaiVoices.forEach(voice => {
+      thaiVoices.forEach((voice, index) => {
         const option = document.createElement('option');
-        option.value = voice.voiceURI;
-        option.textContent = `🇹🇭 ${voice.name.replace(/th[-_]TH/gi, '').trim() || 'เสียงพากย์ไทย'}`;
-        if (voice.voiceURI === state.selectedVoiceURI) {
+        option.value = voice.voiceURI || voice.name;
+        option.textContent = `🇹🇭 ${voice.name.replace(/th[-_]TH/gi, '').trim() || `เสียงพากย์ไทย ${index + 1}`}`;
+        if (voice.voiceURI === state.selectedVoiceURI || voice.name === state.selectedVoiceURI) {
           option.selected = true;
         }
         elements.ttsVoiceSelect.appendChild(option);
       });
-    }
 
-    // Curated Thai Voice options (including Kanya, Siri, Narisa, Standard) for iPhone/iOS Safari & Desktop
-    const curatedThaiOptions = [
-      { id: 'ios_kanya', name: '🇹🇭 เสียงกันยา (Kanya - iOS Thai)' },
-      { id: 'ios_siri', name: '🇹🇭 เสียงสิริ (Siri Voice - ตามเครื่อง iPhone)' },
-      { id: 'ios_narisa', name: '🇹🇭 เสียงนริศรา (Narisa - iOS Thai)' },
-      { id: 'ios_std', name: '🇹🇭 เสียงภาษาไทยมาตรฐาน (th-TH)' }
-    ];
-
-    curatedThaiOptions.forEach(opt => {
-      const exists = Array.from(elements.ttsVoiceSelect.options).some(o => o.value === opt.id || o.textContent === opt.name);
-      if (!exists) {
-        const option = document.createElement('option');
-        option.value = opt.id;
-        option.textContent = opt.name;
-        if (opt.id === state.selectedVoiceURI) {
-          option.selected = true;
-        }
-        elements.ttsVoiceSelect.appendChild(option);
+      if (!state.selectedVoiceURI && thaiVoices.length > 0) {
+        state.selectedVoiceURI = thaiVoices[0].voiceURI || thaiVoices[0].name;
+        elements.ttsVoiceSelect.value = state.selectedVoiceURI;
       }
-    });
-
-    if (!state.selectedVoiceURI && elements.ttsVoiceSelect.options.length > 0) {
-      state.selectedVoiceURI = elements.ttsVoiceSelect.options[0].value;
-      elements.ttsVoiceSelect.value = state.selectedVoiceURI;
+    } else {
+      // Fallback option when iOS exposes 1 unified system voice engine
+      const option = document.createElement('option');
+      option.value = 'default_th';
+      option.textContent = '🇹🇭 เสียงภาษาไทย (ตามที่เลือกในตั้งค่า iPhone)';
+      elements.ttsVoiceSelect.appendChild(option);
+      state.selectedVoiceURI = 'default_th';
     }
   }
 
@@ -789,17 +775,12 @@ document.addEventListener('DOMContentLoaded', () => {
     state.synth.cancel();
 
     const utterance = new SpeechSynthesisUtterance(targetText);
-    utterance.lang = 'th-TH'; // Always set th-TH explicitly for iOS Safari
+    utterance.lang = 'th-TH'; // Explicitly set th-TH for iOS WebKit
     utterance.rate = state.ttsRate;
     utterance.volume = state.ttsMuted ? 0 : 1;
 
-    if (state.selectedVoiceURI && state.voices.length > 0) {
-      const searchKey = state.selectedVoiceURI.replace('ios_', '').toLowerCase();
-      const foundVoice = state.voices.find(v => 
-        v.voiceURI === state.selectedVoiceURI || 
-        v.name.toLowerCase().includes(searchKey) ||
-        v.voiceURI.toLowerCase().includes(searchKey)
-      );
+    if (state.selectedVoiceURI && state.selectedVoiceURI !== 'default_th' && state.voices.length > 0) {
+      const foundVoice = state.voices.find(v => v.voiceURI === state.selectedVoiceURI || v.name === state.selectedVoiceURI);
       if (foundVoice) {
         utterance.voice = foundVoice;
         if (foundVoice.lang) utterance.lang = foundVoice.lang;
