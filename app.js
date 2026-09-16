@@ -386,11 +386,14 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.chapterTitle.textContent = parsedData.title;
     elements.chapterSubtitle.textContent = parsedData.subtitle;
     
-    // Format body paragraphs cleanly
-    const formattedParagraphs = parsedData.body
-      .split('\n\n')
-      .filter(p => p.trim().length > 0)
-      .map(p => `<p>${escapeHtml(p.trim())}</p>`)
+    // Format body paragraphs cleanly (split by single or double newlines)
+    const rawParagraphs = parsedData.body
+      .split(/\n+/)
+      .map(p => p.trim())
+      .filter(p => p.length > 0);
+
+    const formattedParagraphs = rawParagraphs
+      .map(p => `<p>${escapeHtml(p)}</p>`)
       .join('');
 
     elements.chapterBody.innerHTML = formattedParagraphs || `<p>${escapeHtml(parsedData.body)}</p>`;
@@ -676,6 +679,13 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // Synchronous iOS Safari Gesture Unlock
+    try {
+      const unlockUtterance = new SpeechSynthesisUtterance(' ');
+      unlockUtterance.volume = 0.01;
+      state.synth.speak(unlockUtterance);
+    } catch (e) {}
+
     if (state.ttsState === 'idle') {
       state.ttsCurrentIndex = 0;
       startTTSReading();
@@ -749,7 +759,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    const targetText = state.ttsParagraphElements[state.ttsCurrentIndex].textContent.trim();
+    const rawText = state.ttsParagraphElements[state.ttsCurrentIndex].textContent.trim();
+    // Strip leading Markdown characters (#, *, -, >) so TTS doesn't speak "hashtag"
+    const targetText = rawText.replace(/^[#*->]+\s*/, '').trim();
+
     if (!targetText) {
       state.ttsCurrentIndex++;
       speakCurrentParagraph();
