@@ -1060,45 +1060,82 @@ code, pre {
 /* Mobile & Tablet Responsive Enhancements */
 .mobile-only { display: none; }
 
+.sidebar-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 140;
+  transition: opacity 0.3s ease;
+}
+
 @media (max-width: 868px) {
   .mobile-only { display: inline-flex; }
 
-  /* Navbar Mobile Optimization */
+  /* Top Navbar Mobile Optimization */
   .navbar {
-    padding: 10px 14px;
+    padding: 8px 12px;
+    height: 56px;
+  }
+
+  .logo-icon {
+    width: 36px;
+    height: 36px;
+    font-size: 1.1rem;
   }
 
   .brand-text h1 {
-    font-size: 1.05rem;
+    font-size: 1rem;
   }
 
   .sub-badge {
-    display: none; /* Hide sub badge on small screens */
+    display: none;
+  }
+
+  .quick-url-fetcher {
+    padding: 2px 4px 2px 8px;
+    border-radius: var(--radius-full);
+  }
+
+  .quick-url-fetcher input {
+    width: 140px;
+    font-size: 0.78rem;
+  }
+
+  .quick-url-fetcher .btn-sm {
+    padding: 3px 8px;
+    font-size: 0.72rem;
   }
 
   .navbar .btn span {
-    display: none; /* Icon-only buttons in navbar on mobile */
+    display: none;
   }
 
   .live-status-pill .status-text {
-    display: none; /* Icon-only status dot on mobile */
+    display: none;
   }
 
   .live-status-pill {
-    padding: 6px 8px;
+    padding: 5px 8px;
   }
 
-  /* Sidebar Drawer */
+  /* Sidebar Drawer Mobile Styling */
   .sidebar {
     position: fixed;
-    top: 61px;
+    top: 0;
     left: 0;
     bottom: 0;
     width: 85%;
     max-width: 320px;
     z-index: 150;
     transform: translateX(-100%);
-    box-shadow: 10px 0 30px rgba(0, 0, 0, 0.5);
+    box-shadow: 12px 0 35px rgba(0, 0, 0, 0.6);
+    border-radius: 0 20px 20px 0;
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .sidebar.open {
@@ -1106,16 +1143,34 @@ code, pre {
   }
 
   .content-area {
-    padding: 12px 10px;
+    padding: 10px 8px;
   }
 
-  /* Reader Toolbar Mobile Layout */
+  /* View Tabs Mobile */
+  .view-tabs {
+    margin-bottom: 12px;
+    gap: 4px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+
+  .tab-btn {
+    padding: 6px 12px;
+    font-size: 0.82rem;
+    white-space: nowrap;
+  }
+
+  /* Reader Toolbar Mobile Player Dock */
   .reader-toolbar {
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
     padding: 12px;
+    background: var(--bg-card);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
   }
 
   .toolbar-group {
@@ -1125,35 +1180,40 @@ code, pre {
     gap: 8px;
   }
 
-  /* TTS Controls Grid on Mobile */
+  /* TTS Control Dock Grid on Mobile */
   .tts-control-bar {
     width: 100%;
     flex-wrap: wrap;
     gap: 8px;
     padding: 8px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-md);
     justify-content: space-between;
   }
 
   .tts-speed-selector, .tts-voice-selector {
-    flex: 1 1 calc(50% - 6px);
-    min-width: 130px;
+    flex: 1 1 calc(50% - 4px);
+    min-width: 120px;
+    padding: 4px 6px;
     justify-content: space-between;
+    font-size: 0.78rem;
   }
 
   .tts-speed-selector select, .tts-voice-selector select {
     max-width: 100px;
     flex: 1;
+    font-size: 0.78rem;
   }
 
   /* Reader Card Mobile Spacing */
   .reader-card {
-    padding: 18px 14px;
+    padding: 16px 14px 80px 14px; /* Space for bottom floating bar */
     border-radius: var(--radius-md);
     margin: 0;
   }
 
   .chapter-title {
-    font-size: 1.35rem;
+    font-size: 1.3rem;
   }
 
   .chapter-subtitle {
@@ -1162,7 +1222,7 @@ code, pre {
 
   .chapter-body {
     font-size: clamp(16px, 4.5vw, 20px);
-    line-height: 1.8;
+    line-height: 1.85;
   }
 
   .chapter-body p {
@@ -1170,25 +1230,28 @@ code, pre {
     margin-bottom: 1.2em;
   }
 
-  /* Mobile Sticky Bottom Navigation */
+  /* Mobile Sticky Bottom Floating Navigation */
   .chapter-footer {
-    position: sticky;
-    bottom: 0;
-    background: var(--bg-card);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    padding: 12px;
-    margin: 20px -14px -18px -14px;
-    border-top: 1px solid var(--border-color);
-    border-radius: 0 0 var(--radius-md) var(--radius-md);
-    box-shadow: 0 -4px 15px rgba(0, 0, 0, 0.4);
-    z-index: 10;
+    position: fixed;
+    bottom: 12px;
+    left: 12px;
+    right: 12px;
+    background: rgba(18, 24, 36, 0.88);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    padding: 10px 14px;
+    margin: 0;
+    border: 1px solid var(--border-active);
+    border-radius: var(--radius-full);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.6);
+    z-index: 100;
   }
 
   .chapter-footer .btn {
     flex: 1;
-    padding: 10px 12px;
-    font-size: 0.88rem;
+    padding: 8px 12px;
+    font-size: 0.85rem;
+    border-radius: var(--radius-full);
   }
 
   .meta-grid {
@@ -1201,6 +1264,9 @@ code, pre {
 }
 
 @media (max-width: 480px) {
+  .quick-url-fetcher {
+    display: none; /* Hide quick fetch bar on very small phones to prevent overflow */
+  }
   .tts-speed-selector, .tts-voice-selector {
     flex: 1 1 100%;
   }

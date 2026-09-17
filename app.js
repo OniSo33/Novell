@@ -50,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // DOM Elements Selector Cache
   const elements = {
     sidebar: document.getElementById('sidebar'),
+    sidebarOverlay: document.getElementById('sidebarOverlay'),
     btnToggleSidebar: document.getElementById('btnToggleSidebar'),
     chapterList: document.getElementById('chapterList'),
     chapterCountBadge: document.getElementById('chapterCountBadge'),
@@ -572,9 +573,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       itemEl.addEventListener('click', () => {
         loadChapter(idx);
-        // Mobile auto collapse sidebar
+        // Mobile auto collapse sidebar and overlay
         if (window.innerWidth <= 868) {
           elements.sidebar.classList.remove('open');
+          if (elements.sidebarOverlay) elements.sidebarOverlay.classList.add('hidden');
         }
       });
 
@@ -1032,10 +1034,21 @@ document.addEventListener('DOMContentLoaded', () => {
      ========================================================================== */
 
   function setupEventListeners() {
-    // Sidebar Toggle
-    elements.btnToggleSidebar.addEventListener('click', () => {
-      elements.sidebar.classList.toggle('open');
-    });
+    // Sidebar Toggle & Mobile Overlay
+    const toggleSidebarDrawer = () => {
+      const isOpen = elements.sidebar.classList.toggle('open');
+      if (elements.sidebarOverlay) {
+        elements.sidebarOverlay.classList.toggle('hidden', !isOpen);
+      }
+    };
+
+    elements.btnToggleSidebar.addEventListener('click', toggleSidebarDrawer);
+    if (elements.sidebarOverlay) {
+      elements.sidebarOverlay.addEventListener('click', () => {
+        elements.sidebar.classList.remove('open');
+        elements.sidebarOverlay.classList.add('hidden');
+      });
+    }
 
     // Quick URL Fetcher
     const handleQuickFetch = () => {
