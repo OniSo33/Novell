@@ -318,26 +318,26 @@ document.addEventListener('DOMContentLoaded', () => {
   async function handleFetchFallback(errorMessage) {
     const [owner, repo] = state.repo.split('/');
     
-    // Direct raw probes for common novel chapter filenames e.g. 0000-บทนำ-ฤดูเก็บเกี่ยว.json, chapter_0.json
+    // Direct raw probes for real novel chapter files (0000 to 0100)
     const candidateNames = [
       '0000-บทนำ-ฤดูเก็บเกี่ยว.json',
-      'chapter_00.json',
-      'chapter_0.json',
-      'chapter_01.json',
-      'chapter_1.json',
-      'chapter_02.json',
-      'chapter_2.json',
-      'chapter_03.json',
-      'chapter_3.json',
-      'chapter_04.json',
-      'chapter_4.json',
-      'chapter_05.json',
-      'chapter_5.json'
+      '0000.json', '0001.json', '0002.json', '0003.json', '0004.json', '0005.json',
+      '0006.json', '0007.json', '0008.json', '0009.json', '0010.json', '0011.json',
+      '0012.json', '0013.json', '0014.json', '0015.json', '0016.json', '0017.json'
     ];
+
+    // Generate up to 100 real chapter probes
+    for (let i = 0; i <= 100; i++) {
+      const numStr = i.toString().padStart(4, '0');
+      const fname1 = `${numStr}.json`;
+      const fname2 = `chapter_${i}.json`;
+      if (!candidateNames.includes(fname1)) candidateNames.push(fname1);
+      if (!candidateNames.includes(fname2)) candidateNames.push(fname2);
+    }
 
     const discoveredChapters = [];
 
-    // Probe first candidate to verify direct raw reachability
+    // Probe raw candidate files
     for (let i = 0; i < candidateNames.length; i++) {
       const fileName = candidateNames[i];
       const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${state.path}/${encodeURIComponent(fileName)}`;
@@ -348,7 +348,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const matchNum = fileName.match(/\d+/);
           const num = matchNum ? parseInt(matchNum[0], 10) : i;
           discoveredChapters.push({
-            id: `raw-${i}`,
+            id: `raw-${i}-${fileName}`,
             name: fileName,
             number: num,
             rawUrl: rawUrl,
@@ -363,31 +363,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (discoveredChapters.length > 0) {
       state.chapters = discoveredChapters;
       sortChapters();
-      setLoadingState(false, 'โหมดดึงข้อมูล Direct Raw');
-      showToast(`ดึงข้อมูลผ่าน Direct Raw สำเร็จ! พบ ${state.chapters.length} บท`, 'success');
+      setLoadingState(false, `ดึงตรงผ่าน Direct Raw (${state.chapters.length} บท)`);
+      showToast(`ดึงข้อมูลนิยายสำเร็จ! พบ ${state.chapters.length} บท`, 'success');
       loadChapter(0);
       return;
     }
 
-    // Default fallback index
-    state.chapters = Array.from({ length: 10 }, (_, i) => {
-      const chapterNum = i;
-      const filename = `chapter_${chapterNum.toString().padStart(2, '0')}.json`;
-      return {
-        id: `fallback-${chapterNum}`,
-        name: filename,
-        number: chapterNum,
-        rawUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${state.path}/${filename}`,
-        size: 1540,
-        content: null,
-        loaded: false
-      };
-    });
-
-    sortChapters();
-    setLoadingState(false, 'โหมดสำรองข้อมูล');
-    showToast(`ดึงผ่าน GitHub Raw สำเร็จ`, 'info');
-    loadChapter(0);
+    // Display clear Rate Limit warning with Token Token guide
+    setLoadingState(false, 'ติด Rate Limit (ใส่ Token ในตั้งค่า)');
+    showToast(`🔒 GitHub API Rate Limit: ใส่ Token ใน ⚙️ ตั้งค่า เพื่อดึงทุกตอนได้ไม่จำกัด`, 'error');
+    renderEmptyState('ติดขัด GitHub Rate Limit (60 ครั้ง/ชม.): กรุณาใส่ GitHub Token ใน ⚙️ ตั้งค่า เพื่อดึงนิยายทุกตอนได้ไม่จำกัด');
   }
 
   async function loadChapter(index) {
