@@ -14,7 +14,7 @@
   <!-- FontAwesome Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   
-  <link rel="stylesheet" href="styles.css?v=1.1.3">
+  <link rel="stylesheet" href="styles.css?v=1.1.5">
 </head>
 <body class="theme-cyber-dark">
 
@@ -162,6 +162,11 @@
                 <span id="ttsPlayText">อ่านให้ฟัง</span>
               </button>
 
+              <button id="btnTTSTest" class="btn btn-secondary" title="ทดสอบระบบเสียงใน iPhone">
+                <i class="fa-solid fa-volume-low"></i>
+                <span>ทดสอบเสียง</span>
+              </button>
+
               <button id="btnTTSStop" class="btn btn-secondary" title="หยุดอ่านและกลับไปจุดเริ่มต้น">
                 <i class="fa-solid fa-square" style="color: #f87171;"></i>
                 <span>หยุด</span>
@@ -186,8 +191,8 @@
 
               <div class="tts-voice-selector" id="ttsVoiceContainer">
                 <i class="fa-solid fa-user-gear"></i>
-                <select id="ttsVoiceSelect" title="เลือกเสียงอ่านภาษาไทย">
-                  <option value="">กำลังโหลดเสียงไทย...</option>
+                <select id="ttsVoiceSelect" title="เลือกระบบเสียงอ่านภาษาไทย">
+                  <option value="">กำลังโหลดระบบเสียง...</option>
                 </select>
               </div>
             </div>
@@ -390,6 +395,6 @@
   <!-- Toast Notification Container -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=1.1.3"></script>
+  <script src="app.js?v=1.1.5"></script>
 </body>
 </html>

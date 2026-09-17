@@ -31,16 +31,17 @@ document.addEventListener('DOMContentLoaded', () => {
     ttsState: 'idle', // 'idle', 'playing', 'paused'
     ttsMuted: false,
     ttsRate: parseFloat(localStorage.getItem('gnr_ttsRate') || '1.0'),
-    selectedVoiceURI: localStorage.getItem('gnr_ttsVoiceURI') || '',
+    selectedVoiceURI: localStorage.getItem('gnr_ttsVoiceURI') || 'native_th',
     voices: [],
     ttsCurrentIndex: 0,
     ttsParagraphElements: [],
     synth: window.speechSynthesis || null,
     currentUtterance: null,
     
-    // HTML5 Cloud Audio Engine (Guaranteed 100% Sound on iPhone 15 Pro Max)
+    // HTML5 Cloud Audio Engine & iOS Native Speech Engine
     cloudAudio: new Audio(),
-    useCloudTTS: true,
+    useCloudTTS: localStorage.getItem('gnr_useCloudTTS') === 'true', // Defaults to false for 100% native iOS Safari sound
+    iosKeepAliveTimer: null,
     
     // Background Audio Keeper for Screen Lock
     silentAudio: new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=')
@@ -93,6 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // TTS Elements
     btnTTSPlayPause: document.getElementById('btnTTSPlayPause'),
+    btnTTSTest: document.getElementById('btnTTSTest'),
     ttsPlayIcon: document.getElementById('ttsPlayIcon'),
     ttsPlayText: document.getElementById('ttsPlayText'),
     btnTTSStop: document.getElementById('btnTTSStop'),
@@ -722,45 +724,98 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- TTS Core System (Paragraph-Chunked Engine) ---
 
+  // --- TTS Core System (iOS Safari & Dual Audio Engine) ---
+
+  function unlockAudioContextForIOS() {
+    if (state.synth) {
+      try {
+        state.synth.resume();
+      } catch (e) {}
+    }
+    if (state.silentAudio && state.silentAudio.paused) {
+      state.silentAudio.play().catch(() => {});
+    }
+  }
+
+  // Register global touch listener to prime iOS Safari WebKit audio context
+  document.addEventListener('touchstart', unlockAudioContextForIOS, { passive: true });
+  document.addEventListener('click', unlockAudioContextForIOS, { passive: true });
+
   function populateVoices() {
-    if (!state.synth) return;
-    
-    state.voices = state.synth.getVoices();
     elements.ttsVoiceSelect.innerHTML = '';
 
-    // Filter ONLY actual native Thai voices returned by browser/OS
-    const thaiVoices = state.voices.filter(v => 
-      v.lang.toLowerCase().includes('th') || 
-      v.name.toLowerCase().includes('thai') ||
-      v.lang.toLowerCase().startsWith('th')
-    );
+    // Option 1: Native iPhone / iOS System Voice (Default & Recommended)
+    const optNative = document.createElement('option');
+    optNative.value = 'native_th';
+    optNative.textContent = '🇹🇭 เสียงภาษาไทยในเครื่อง iPhone / System';
+    elements.ttsVoiceSelect.appendChild(optNative);
 
-    if (thaiVoices.length > 0) {
+    // Option 2: Google Cloud Audio Engine
+    const optCloud = document.createElement('option');
+    optCloud.value = 'cloud_th';
+    optCloud.textContent = '☁️ เสียงพากย์ Google Cloud Audio';
+    elements.ttsVoiceSelect.appendChild(optCloud);
+
+    // If SpeechSynthesis available, append detected browser/OS voices
+    if (state.synth) {
+      state.voices = state.synth.getVoices();
+      const thaiVoices = state.voices.filter(v => 
+        v.lang.toLowerCase().includes('th') || 
+        v.name.toLowerCase().includes('thai') ||
+        v.lang.toLowerCase().startsWith('th')
+      );
+
       thaiVoices.forEach((voice, index) => {
         const option = document.createElement('option');
         option.value = voice.voiceURI || voice.name;
-        option.textContent = `🇹🇭 ${voice.name.replace(/th[-_]TH/gi, '').trim() || `เสียงพากย์ไทย ${index + 1}`}`;
-        if (voice.voiceURI === state.selectedVoiceURI || voice.name === state.selectedVoiceURI) {
-          option.selected = true;
-        }
+        option.textContent = `🇹🇭 ${voice.name.replace(/th[-_]TH/gi, '').trim() || `เสียงพากย์ ${index + 1}`}`;
         elements.ttsVoiceSelect.appendChild(option);
       });
+    }
 
-      if (!state.selectedVoiceURI && thaiVoices.length > 0) {
-        state.selectedVoiceURI = thaiVoices[0].voiceURI || thaiVoices[0].name;
-        elements.ttsVoiceSelect.value = state.selectedVoiceURI;
-      }
+    // Set selected value based on state
+    if (state.useCloudTTS) {
+      elements.ttsVoiceSelect.value = 'cloud_th';
+    } else if (state.selectedVoiceURI && state.selectedVoiceURI !== 'cloud_th') {
+      elements.ttsVoiceSelect.value = state.selectedVoiceURI;
     } else {
-      // Fallback option when iOS exposes 1 unified system voice engine
-      const option = document.createElement('option');
-      option.value = 'default_th';
-      option.textContent = '🇹🇭 เสียงภาษาไทย (ตามที่เลือกในตั้งค่า iPhone)';
-      elements.ttsVoiceSelect.appendChild(option);
-      state.selectedVoiceURI = 'default_th';
+      elements.ttsVoiceSelect.value = 'native_th';
+    }
+  }
+
+  function handleTTSTest() {
+    unlockAudioContextForIOS();
+    showToast('🔊 กำลังทดสอบระบบเสียงภาษาไทย...', 'info');
+
+    const testMsg = 'ทดสอบระบบเสียงอ่านภาษาไทยบนไอโฟน สำเร็จแล้วครับ';
+
+    if (state.useCloudTTS) {
+      speakViaCloudAudio(testMsg);
+    } else {
+      if (!state.synth) {
+        showToast('เบราว์เซอร์ไม่รองรับ WebSpeech API', 'error');
+        return;
+      }
+      state.synth.cancel();
+      state.synth.resume();
+
+      const utterance = new SpeechSynthesisUtterance(testMsg);
+      utterance.lang = 'th-TH';
+      utterance.rate = state.ttsRate;
+      utterance.volume = state.ttsMuted ? 0 : 1;
+
+      if (state.selectedVoiceURI && state.selectedVoiceURI !== 'native_th' && state.selectedVoiceURI !== 'cloud_th' && state.voices.length > 0) {
+        const foundVoice = state.voices.find(v => v.voiceURI === state.selectedVoiceURI || v.name === state.selectedVoiceURI);
+        if (foundVoice) utterance.voice = foundVoice;
+      }
+
+      state.currentUtterance = utterance;
+      state.synth.speak(utterance);
     }
   }
 
   function handleTTSPlayPause() {
+    unlockAudioContextForIOS();
     if (state.ttsState === 'idle') {
       state.ttsCurrentIndex = 0;
       startTTSReading();
@@ -783,6 +838,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     state.ttsState = 'playing';
+
+    unlockAudioContextForIOS();
+
+    // iOS Keep-Alive interval to prevent WebKit speech synthesis from auto-pausing after 15 seconds
+    if (state.iosKeepAliveTimer) clearInterval(state.iosKeepAliveTimer);
+    state.iosKeepAliveTimer = setInterval(() => {
+      if (state.ttsState === 'playing' && state.synth && state.synth.paused) {
+        state.synth.resume();
+      }
+    }, 3000);
 
     if (state.silentAudio) {
       state.silentAudio.play().catch(() => {});
@@ -842,7 +907,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Use HTML5 Cloud Audio Engine for 100% Sound Guarantee on iPhone 15 Pro Max
     if (state.useCloudTTS) {
       speakViaCloudAudio(targetText);
     } else {
@@ -851,7 +915,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function speakViaCloudAudio(text) {
-    // Truncate text chunk for Google Cloud TTS API limit if needed
     const textChunk = text.substring(0, 200);
     const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(textChunk)}`;
 
@@ -873,7 +936,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     state.cloudAudio.play().catch((err) => {
-      console.warn('Cloud Audio Play prevented, falling back:', err);
+      console.warn('Cloud Audio Play prevented, falling back to WebSpeech:', err);
       speakViaWebSpeech(text);
     });
   }
@@ -881,13 +944,14 @@ document.addEventListener('DOMContentLoaded', () => {
   function speakViaWebSpeech(targetText) {
     if (!state.synth) return;
     state.synth.cancel();
+    state.synth.resume(); // Ensure iOS WebKit audio engine is active
 
     const utterance = new SpeechSynthesisUtterance(targetText);
     utterance.lang = 'th-TH';
     utterance.rate = state.ttsRate;
     utterance.volume = state.ttsMuted ? 0 : 1;
 
-    if (state.selectedVoiceURI && state.selectedVoiceURI !== 'default_th' && state.voices.length > 0) {
+    if (state.selectedVoiceURI && state.selectedVoiceURI !== 'native_th' && state.selectedVoiceURI !== 'cloud_th' && state.voices.length > 0) {
       const foundVoice = state.voices.find(v => v.voiceURI === state.selectedVoiceURI || v.name === state.selectedVoiceURI);
       if (foundVoice) utterance.voice = foundVoice;
     }
@@ -899,7 +963,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
 
-    utterance.onerror = () => {
+    utterance.onerror = (e) => {
+      console.warn('SpeechSynthesisUtterance error:', e);
       if (state.ttsState === 'playing') {
         state.ttsCurrentIndex++;
         speakCurrentParagraph();
@@ -915,6 +980,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (state.cloudAudio) state.cloudAudio.pause();
       if (state.synth) state.synth.cancel();
       if (state.silentAudio) state.silentAudio.pause();
+      if (state.iosKeepAliveTimer) {
+        clearInterval(state.iosKeepAliveTimer);
+        state.iosKeepAliveTimer = null;
+      }
       
       state.ttsState = 'paused';
       updateTTSUI();
@@ -925,6 +994,15 @@ document.addEventListener('DOMContentLoaded', () => {
   function resumeTTSReading() {
     if (state.ttsState === 'paused') {
       state.ttsState = 'playing';
+      unlockAudioContextForIOS();
+      
+      if (state.iosKeepAliveTimer) clearInterval(state.iosKeepAliveTimer);
+      state.iosKeepAliveTimer = setInterval(() => {
+        if (state.ttsState === 'playing' && state.synth && state.synth.paused) {
+          state.synth.resume();
+        }
+      }, 3000);
+
       if (state.silentAudio) state.silentAudio.play().catch(() => {});
       updateTTSUI();
       speakCurrentParagraph();
@@ -969,17 +1047,25 @@ document.addEventListener('DOMContentLoaded', () => {
     showToast(`ปรับความเร็วเสียงเป็น ${state.ttsRate}x`, 'info');
   }
 
-  function changeTTSVoice(newVoiceURI) {
-    state.selectedVoiceURI = newVoiceURI;
-    localStorage.setItem('gnr_ttsVoiceURI', state.selectedVoiceURI);
-
-    const voiceObj = state.voices.find(v => v.voiceURI === newVoiceURI);
-    const voiceName = voiceObj ? voiceObj.name : 'ไทย';
+  function changeTTSVoice(newVoiceVal) {
+    if (newVoiceVal === 'cloud_th') {
+      state.useCloudTTS = true;
+      localStorage.setItem('gnr_useCloudTTS', 'true');
+      showToast('เปลี่ยนเป็นระบบเสียง Google Cloud Audio', 'info');
+    } else {
+      state.useCloudTTS = false;
+      localStorage.setItem('gnr_useCloudTTS', 'false');
+      state.selectedVoiceURI = newVoiceVal;
+      localStorage.setItem('gnr_ttsVoiceURI', newVoiceVal);
+      
+      const voiceObj = state.voices.find(v => v.voiceURI === newVoiceVal || v.name === newVoiceVal);
+      const voiceName = voiceObj ? voiceObj.name : 'เสียงระบบ iPhone';
+      showToast(`เปลี่ยนเป็นระบบเสียงในเครื่อง: ${voiceName}`, 'success');
+    }
 
     if (state.ttsState === 'playing') {
-      speakCurrentParagraph(); // Re-trigger current paragraph with new voice
+      speakCurrentParagraph();
     }
-    showToast(`เปลี่ยนเสียงอ่านเป็น: ${voiceName}`, 'success');
   }
 
   function resetTTSState() {
@@ -987,6 +1073,11 @@ document.addEventListener('DOMContentLoaded', () => {
     state.currentUtterance = null;
     state.ttsCurrentIndex = 0;
     
+    if (state.iosKeepAliveTimer) {
+      clearInterval(state.iosKeepAliveTimer);
+      state.iosKeepAliveTimer = null;
+    }
+
     if (state.silentAudio) {
       state.silentAudio.pause();
     }
@@ -1142,6 +1233,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Reader Bookmark & TTS
     elements.btnBookmark.addEventListener('click', toggleBookmark);
     elements.btnTTSPlayPause.addEventListener('click', handleTTSPlayPause);
+    if (elements.btnTTSTest) {
+      elements.btnTTSTest.addEventListener('click', handleTTSTest);
+    }
     elements.btnTTSStop.addEventListener('click', stopTTSReading);
     elements.btnTTSMute.addEventListener('click', toggleTTSMute);
     elements.ttsSpeedSelect.addEventListener('change', (e) => changeTTSSpeed(e.target.value));
