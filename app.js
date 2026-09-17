@@ -935,11 +935,10 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Highlight current paragraph on screen
+    // Highlight current paragraph on screen without auto-scrolling
     state.ttsParagraphElements.forEach((p, idx) => {
       if (idx === state.ttsCurrentIndex) {
         p.classList.add('tts-active-line');
-        p.scrollIntoView({ behavior: 'smooth', block: 'center' });
       } else {
         p.classList.remove('tts-active-line');
       }
