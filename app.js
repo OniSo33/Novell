@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ttsState: 'idle', // 'idle', 'playing', 'paused'
     ttsMuted: false,
     ttsRate: parseFloat(localStorage.getItem('gnr_ttsRate') || '1.0'),
-    selectedVoiceURI: localStorage.getItem('gnr_ttsVoiceURI') || 'native_th',
+    selectedVoiceURI: (localStorage.getItem('gnr_ttsVoiceURI') && localStorage.getItem('gnr_ttsVoiceURI') !== 'native_th' && localStorage.getItem('gnr_ttsVoiceURI') !== 'default_th') ? localStorage.getItem('gnr_ttsVoiceURI') : 'rv_th_female',
     voices: [],
     ttsCurrentIndex: 0,
     ttsParagraphElements: [],
@@ -724,7 +724,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- TTS Core System (Paragraph-Chunked Engine) ---
 
-  // --- TTS Core System (iOS Safari & Dual Audio Engine) ---
+  // --- TTS Core System (Mobile ResponsiveVoice + Dual Audio Engine) ---
 
   function unlockAudioContextForIOS() {
     if (state.synth) {
@@ -735,28 +735,86 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.silentAudio && state.silentAudio.paused) {
       state.silentAudio.play().catch(() => {});
     }
+    if (window.responsiveVoice) {
+      try {
+        window.responsiveVoice.init();
+      } catch (e) {}
+    }
   }
 
   // Register global touch listener to prime iOS Safari WebKit audio context
   document.addEventListener('touchstart', unlockAudioContextForIOS, { passive: true });
   document.addEventListener('click', unlockAudioContextForIOS, { passive: true });
 
+  function stopAllAudioEngines() {
+    state.ttsState = 'paused';
+
+    if (state.iosKeepAliveTimer) {
+      clearInterval(state.iosKeepAliveTimer);
+      state.iosKeepAliveTimer = null;
+    }
+
+    // Detach callbacks from currentUtterance to prevent async event cascades
+    if (state.currentUtterance) {
+      state.currentUtterance.onend = null;
+      state.currentUtterance.onerror = null;
+    }
+
+    if (window.responsiveVoice) {
+      try {
+        window.responsiveVoice.cancel();
+      } catch (e) {}
+    }
+
+    if (state.cloudAudio) {
+      try {
+        state.cloudAudio.pause();
+        state.cloudAudio.currentTime = 0;
+      } catch (e) {}
+    }
+
+    if (state.synth) {
+      try {
+        state.synth.cancel();
+        state.synth.pause();
+      } catch (e) {}
+    }
+
+    if (state.silentAudio) {
+      try {
+        state.silentAudio.pause();
+      } catch (e) {}
+    }
+  }
+
   function populateVoices() {
     elements.ttsVoiceSelect.innerHTML = '';
 
-    // Option 1: Native iPhone / iOS System Voice (Default & Recommended)
+    // Option 1: ResponsiveVoice Thai Female (Best & Most Reliable for iPhone)
+    const optRvFemale = document.createElement('option');
+    optRvFemale.value = 'rv_th_female';
+    optRvFemale.textContent = '🇹🇭 เสียงผู้หญิง (ResponsiveVoice - ชัดเจน แนะนำสำหรับ iPhone)';
+    elements.ttsVoiceSelect.appendChild(optRvFemale);
+
+    // Option 2: ResponsiveVoice Thai Male
+    const optRvMale = document.createElement('option');
+    optRvMale.value = 'rv_th_male';
+    optRvMale.textContent = '🇹🇭 เสียงผู้ชาย (ResponsiveVoice - ชัดเจน แนะนำสำหรับ iPhone)';
+    elements.ttsVoiceSelect.appendChild(optRvMale);
+
+    // Option 3: SoundOfText MP3 Cloud Stream
+    const optSoundOfText = document.createElement('option');
+    optSoundOfText.value = 'soundoftext_th';
+    optSoundOfText.textContent = '🔊 เสียงอ่าน MP3 (SoundOfText Cloud Stream - เสียงหยุดทันที 100%)';
+    elements.ttsVoiceSelect.appendChild(optSoundOfText);
+
+    // Option 4: Native System Voice (WebSpeech)
     const optNative = document.createElement('option');
     optNative.value = 'native_th';
-    optNative.textContent = '🇹🇭 เสียงภาษาไทยในเครื่อง iPhone / System';
+    optNative.textContent = '📱 เสียงระบบ iOS/iPhone (WebSpeech System Voice)';
     elements.ttsVoiceSelect.appendChild(optNative);
 
-    // Option 2: Google Cloud Audio Engine
-    const optCloud = document.createElement('option');
-    optCloud.value = 'cloud_th';
-    optCloud.textContent = '☁️ เสียงพากย์ Google Cloud Audio';
-    elements.ttsVoiceSelect.appendChild(optCloud);
-
-    // If SpeechSynthesis available, append detected browser/OS voices
+    // Append any extra native voices if exposed by browser
     if (state.synth) {
       state.voices = state.synth.getVoices();
       const thaiVoices = state.voices.filter(v => 
@@ -768,49 +826,38 @@ document.addEventListener('DOMContentLoaded', () => {
       thaiVoices.forEach((voice, index) => {
         const option = document.createElement('option');
         option.value = voice.voiceURI || voice.name;
-        option.textContent = `🇹🇭 ${voice.name.replace(/th[-_]TH/gi, '').trim() || `เสียงพากย์ ${index + 1}`}`;
+        const cleanName = voice.name.replace(/th[-_]TH/gi, '').replace(/com\.apple\..*/gi, '').trim() || `เสียงพากย์ ${index + 1}`;
+        option.textContent = `🍎 เสียง iOS: ${cleanName}`;
         elements.ttsVoiceSelect.appendChild(option);
       });
     }
 
-    // Set selected value based on state
-    if (state.useCloudTTS) {
-      elements.ttsVoiceSelect.value = 'cloud_th';
-    } else if (state.selectedVoiceURI && state.selectedVoiceURI !== 'cloud_th') {
+    if (state.selectedVoiceURI) {
       elements.ttsVoiceSelect.value = state.selectedVoiceURI;
     } else {
-      elements.ttsVoiceSelect.value = 'native_th';
+      elements.ttsVoiceSelect.value = 'rv_th_female';
+      state.selectedVoiceURI = 'rv_th_female';
     }
   }
 
   function handleTTSTest() {
     unlockAudioContextForIOS();
-    showToast('🔊 กำลังทดสอบระบบเสียงภาษาไทย...', 'info');
+    showToast('🔊 กำลังทดสอบระบบเสียง...', 'info');
 
-    const testMsg = 'ทดสอบระบบเสียงอ่านภาษาไทยบนไอโฟน สำเร็จแล้วครับ';
+    const testMsg = 'ทดสอบระบบเสียงอ่านภาษาไทยบน ไอโฟน สำเร็จแล้วครับ';
+    const mode = state.selectedVoiceURI || 'rv_th_female';
 
-    if (state.useCloudTTS) {
+    stopAllAudioEngines();
+    state.ttsState = 'playing';
+
+    if (mode.startsWith('rv_th')) {
+      speakViaResponsiveVoice(testMsg, mode === 'rv_th_male' ? 'Thai Male' : 'Thai Female');
+    } else if (mode === 'soundoftext_th') {
+      speakViaSoundOfText(testMsg);
+    } else if (mode === 'cloud_th') {
       speakViaCloudAudio(testMsg);
     } else {
-      if (!state.synth) {
-        showToast('เบราว์เซอร์ไม่รองรับ WebSpeech API', 'error');
-        return;
-      }
-      state.synth.cancel();
-      state.synth.resume();
-
-      const utterance = new SpeechSynthesisUtterance(testMsg);
-      utterance.lang = 'th-TH';
-      utterance.rate = state.ttsRate;
-      utterance.volume = state.ttsMuted ? 0 : 1;
-
-      if (state.selectedVoiceURI && state.selectedVoiceURI !== 'native_th' && state.selectedVoiceURI !== 'cloud_th' && state.voices.length > 0) {
-        const foundVoice = state.voices.find(v => v.voiceURI === state.selectedVoiceURI || v.name === state.selectedVoiceURI);
-        if (foundVoice) utterance.voice = foundVoice;
-      }
-
-      state.currentUtterance = utterance;
-      state.synth.speak(utterance);
+      speakViaWebSpeech(testMsg);
     }
   }
 
@@ -837,11 +884,11 @@ document.addEventListener('DOMContentLoaded', () => {
       state.ttsCurrentIndex = 0;
     }
 
+    stopAllAudioEngines();
     state.ttsState = 'playing';
 
     unlockAudioContextForIOS();
 
-    // iOS Keep-Alive interval to prevent WebKit speech synthesis from auto-pausing after 15 seconds
     if (state.iosKeepAliveTimer) clearInterval(state.iosKeepAliveTimer);
     state.iosKeepAliveTimer = setInterval(() => {
       if (state.ttsState === 'playing' && state.synth && state.synth.paused) {
@@ -907,18 +954,71 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    if (state.useCloudTTS) {
+    const mode = state.selectedVoiceURI || 'rv_th_female';
+
+    if (mode.startsWith('rv_th')) {
+      speakViaResponsiveVoice(targetText, mode === 'rv_th_male' ? 'Thai Male' : 'Thai Female');
+    } else if (mode === 'soundoftext_th') {
+      speakViaSoundOfText(targetText);
+    } else if (mode === 'cloud_th') {
       speakViaCloudAudio(targetText);
     } else {
       speakViaWebSpeech(targetText);
     }
   }
 
-  function speakViaCloudAudio(text) {
-    const textChunk = text.substring(0, 200);
-    const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(textChunk)}`;
+  function speakViaResponsiveVoice(targetText, voiceName = 'Thai Female') {
+    if (window.responsiveVoice && typeof window.responsiveVoice.speak === 'function') {
+      try {
+        window.responsiveVoice.speak(targetText, voiceName, {
+          rate: state.ttsRate,
+          volume: state.ttsMuted ? 0 : 1,
+          onend: () => {
+            if (state.ttsState === 'playing') {
+              state.ttsCurrentIndex++;
+              speakCurrentParagraph();
+            }
+          },
+          onerror: () => {
+            if (state.ttsState === 'playing') {
+              speakViaSoundOfText(targetText);
+            }
+          }
+        });
+        return;
+      } catch (e) {
+        console.warn('ResponsiveVoice error, falling back to SoundOfText:', e);
+      }
+    }
+    speakViaSoundOfText(targetText);
+  }
 
-    state.cloudAudio.pause();
+  async function speakViaSoundOfText(targetText) {
+    const textChunk = targetText.substring(0, 100);
+    let audioUrl = '';
+
+    try {
+      const res = await fetch('https://api.soundoftext.com/sounds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          engine: 'Google',
+          data: { text: textChunk, voice: 'th-TH' }
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.id) {
+          audioUrl = `https://files.soundoftext.com/${data.id}.mp3`;
+        }
+      }
+    } catch (e) {}
+
+    if (!audioUrl) {
+      audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(textChunk)}`;
+    }
+
+    if (state.cloudAudio) state.cloudAudio.pause();
     state.cloudAudio = new Audio(audioUrl);
     state.cloudAudio.playbackRate = state.ttsRate;
     state.cloudAudio.volume = state.ttsMuted ? 0 : 1;
@@ -930,28 +1030,64 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
 
-    state.cloudAudio.onerror = (e) => {
-      console.warn('Cloud Audio error, falling back to WebSpeech:', e);
-      speakViaWebSpeech(text);
+    state.cloudAudio.onerror = () => {
+      if (state.ttsState === 'playing') {
+        speakViaWebSpeech(targetText);
+      }
     };
 
-    state.cloudAudio.play().catch((err) => {
-      console.warn('Cloud Audio Play prevented, falling back to WebSpeech:', err);
-      speakViaWebSpeech(text);
+    state.cloudAudio.play().catch(err => {
+      if (state.ttsState === 'playing') {
+        speakViaWebSpeech(targetText);
+      }
+    });
+  }
+
+  function speakViaCloudAudio(text) {
+    const textChunk = text.substring(0, 200);
+    const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(textChunk)}`;
+
+    if (state.cloudAudio) state.cloudAudio.pause();
+    state.cloudAudio = new Audio(audioUrl);
+    state.cloudAudio.playbackRate = state.ttsRate;
+    state.cloudAudio.volume = state.ttsMuted ? 0 : 1;
+
+    state.cloudAudio.onended = () => {
+      if (state.ttsState === 'playing') {
+        state.ttsCurrentIndex++;
+        speakCurrentParagraph();
+      }
+    };
+
+    state.cloudAudio.onerror = () => {
+      if (state.ttsState === 'playing') {
+        speakViaWebSpeech(text);
+      }
+    };
+
+    state.cloudAudio.play().catch(err => {
+      if (state.ttsState === 'playing') {
+        speakViaWebSpeech(text);
+      }
     });
   }
 
   function speakViaWebSpeech(targetText) {
-    if (!state.synth) return;
-    state.synth.cancel();
-    state.synth.resume(); // Ensure iOS WebKit audio engine is active
+    if (!state.synth) {
+      speakViaResponsiveVoice(targetText);
+      return;
+    }
+    try {
+      state.synth.cancel();
+      state.synth.resume();
+    } catch (e) {}
 
     const utterance = new SpeechSynthesisUtterance(targetText);
     utterance.lang = 'th-TH';
     utterance.rate = state.ttsRate;
     utterance.volume = state.ttsMuted ? 0 : 1;
 
-    if (state.selectedVoiceURI && state.selectedVoiceURI !== 'native_th' && state.selectedVoiceURI !== 'cloud_th' && state.voices.length > 0) {
+    if (state.selectedVoiceURI && !state.selectedVoiceURI.startsWith('rv_th') && state.selectedVoiceURI !== 'soundoftext_th' && state.selectedVoiceURI !== 'native_th' && state.voices.length > 0) {
       const foundVoice = state.voices.find(v => v.voiceURI === state.selectedVoiceURI || v.name === state.selectedVoiceURI);
       if (foundVoice) utterance.voice = foundVoice;
     }
@@ -964,27 +1100,23 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     utterance.onerror = (e) => {
-      console.warn('SpeechSynthesisUtterance error:', e);
+      console.warn('WebSpeech error, fallback to ResponsiveVoice:', e);
       if (state.ttsState === 'playing') {
-        state.ttsCurrentIndex++;
-        speakCurrentParagraph();
+        speakViaResponsiveVoice(targetText);
       }
     };
 
     state.currentUtterance = utterance;
-    state.synth.speak(utterance);
+    try {
+      state.synth.speak(utterance);
+    } catch (err) {
+      speakViaResponsiveVoice(targetText);
+    }
   }
 
   function pauseTTSReading() {
     if (state.ttsState === 'playing') {
-      if (state.cloudAudio) state.cloudAudio.pause();
-      if (state.synth) state.synth.cancel();
-      if (state.silentAudio) state.silentAudio.pause();
-      if (state.iosKeepAliveTimer) {
-        clearInterval(state.iosKeepAliveTimer);
-        state.iosKeepAliveTimer = null;
-      }
-      
+      stopAllAudioEngines();
       state.ttsState = 'paused';
       updateTTSUI();
       showToast(`หยุดอ่านชั่วคราว ที่ย่อหน้าที่ ${state.ttsCurrentIndex + 1}`, 'info');
@@ -993,6 +1125,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function resumeTTSReading() {
     if (state.ttsState === 'paused') {
+      stopAllAudioEngines();
       state.ttsState = 'playing';
       unlockAudioContextForIOS();
       
@@ -1011,10 +1144,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function stopTTSReading() {
-    if (state.cloudAudio) state.cloudAudio.pause();
-    if (state.synth) state.synth.cancel();
-    if (state.silentAudio) state.silentAudio.pause();
-
+    stopAllAudioEngines();
     resetTTSState();
     showToast('หยุดการอ่านเสียงและกลับไปจุดเริ่มต้นแล้ว', 'info');
   }
@@ -1048,40 +1178,23 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function changeTTSVoice(newVoiceVal) {
-    if (newVoiceVal === 'cloud_th') {
-      state.useCloudTTS = true;
-      localStorage.setItem('gnr_useCloudTTS', 'true');
-      showToast('เปลี่ยนเป็นระบบเสียง Google Cloud Audio', 'info');
-    } else {
-      state.useCloudTTS = false;
-      localStorage.setItem('gnr_useCloudTTS', 'false');
-      state.selectedVoiceURI = newVoiceVal;
-      localStorage.setItem('gnr_ttsVoiceURI', newVoiceVal);
-      
-      const voiceObj = state.voices.find(v => v.voiceURI === newVoiceVal || v.name === newVoiceVal);
-      const voiceName = voiceObj ? voiceObj.name : 'เสียงระบบ iPhone';
-      showToast(`เปลี่ยนเป็นระบบเสียงในเครื่อง: ${voiceName}`, 'success');
-    }
+    state.selectedVoiceURI = newVoiceVal;
+    localStorage.setItem('gnr_ttsVoiceURI', newVoiceVal);
 
     if (state.ttsState === 'playing') {
+      stopAllAudioEngines();
+      state.ttsState = 'playing';
       speakCurrentParagraph();
     }
+    showToast(`เปลี่ยนระบบเสียงเป็น: ${elements.ttsVoiceSelect.options[elements.ttsVoiceSelect.selectedIndex]?.text || newVoiceVal}`, 'success');
   }
 
   function resetTTSState() {
+    stopAllAudioEngines();
     state.ttsState = 'idle';
     state.currentUtterance = null;
     state.ttsCurrentIndex = 0;
     
-    if (state.iosKeepAliveTimer) {
-      clearInterval(state.iosKeepAliveTimer);
-      state.iosKeepAliveTimer = null;
-    }
-
-    if (state.silentAudio) {
-      state.silentAudio.pause();
-    }
-
     // Remove all highlights
     if (state.ttsParagraphElements) {
       state.ttsParagraphElements.forEach(p => p.classList.remove('tts-active-line'));
