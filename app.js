@@ -35,6 +35,8 @@ document.addEventListener('DOMContentLoaded', () => {
     voices: [],
     ttsCurrentIndex: 0,
     ttsParagraphElements: [],
+    ttsSubChunks: [],
+    ttsSubIndex: 0,
     synth: window.speechSynthesis || null,
     currentUtterance: null,
     
@@ -746,8 +748,43 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('touchstart', unlockAudioContextForIOS, { passive: true });
   document.addEventListener('click', unlockAudioContextForIOS, { passive: true });
 
+  function splitTextIntoSubChunks(text, maxLen = 130) {
+    if (!text || typeof text !== 'string') return [];
+    const cleanText = text.trim();
+    if (cleanText.length <= maxLen) return [cleanText];
+
+    const chunks = [];
+    const regex = /(?<=[.!?\n\u0E2F])\s*|\s+/;
+    const words = cleanText.split(regex);
+    let currentChunk = '';
+
+    for (const word of words) {
+      if (!word) continue;
+      if ((currentChunk + ' ' + word).trim().length <= maxLen) {
+        currentChunk = (currentChunk + ' ' + word).trim();
+      } else {
+        if (currentChunk.length > 0) {
+          chunks.push(currentChunk);
+        }
+        currentChunk = word;
+        while (currentChunk.length > maxLen) {
+          chunks.push(currentChunk.substring(0, maxLen).trim());
+          currentChunk = currentChunk.substring(maxLen).trim();
+        }
+      }
+    }
+
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk);
+    }
+
+    return chunks.length > 0 ? chunks : [cleanText];
+  }
+
   function stopAllAudioEngines() {
     state.ttsState = 'paused';
+    state.ttsSubChunks = [];
+    state.ttsSubIndex = 0;
 
     if (state.iosKeepAliveTimer) {
       clearInterval(state.iosKeepAliveTimer);
@@ -865,6 +902,8 @@ document.addEventListener('DOMContentLoaded', () => {
     unlockAudioContextForIOS();
     if (state.ttsState === 'idle') {
       state.ttsCurrentIndex = 0;
+      state.ttsSubIndex = 0;
+      state.ttsSubChunks = [];
       startTTSReading();
     } else if (state.ttsState === 'playing') {
       pauseTTSReading();
@@ -882,6 +921,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (state.ttsCurrentIndex >= state.ttsParagraphElements.length) {
       state.ttsCurrentIndex = 0;
+      state.ttsSubIndex = 0;
+      state.ttsSubChunks = [];
     }
 
     stopAllAudioEngines();
@@ -944,44 +985,64 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    const rawText = state.ttsParagraphElements[state.ttsCurrentIndex].textContent.trim();
-    const targetText = rawText.replace(/^[#*->]+\s*/, '').trim();
+    // Generate sub-chunks for paragraph if not present
+    if (!state.ttsSubChunks || state.ttsSubChunks.length === 0) {
+      const rawText = state.ttsParagraphElements[state.ttsCurrentIndex].textContent.trim();
+      const targetText = rawText.replace(/^[#*->]+\s*/, '').trim();
 
-    if (!targetText) {
+      if (!targetText) {
+        state.ttsCurrentIndex++;
+        state.ttsSubIndex = 0;
+        state.ttsSubChunks = [];
+        speakCurrentParagraph();
+        return;
+      }
+
+      state.ttsSubChunks = splitTextIntoSubChunks(targetText, 120);
+      state.ttsSubIndex = 0;
+    }
+
+    // Move to next paragraph when all sub-chunks of current paragraph are read
+    if (state.ttsSubIndex >= state.ttsSubChunks.length) {
       state.ttsCurrentIndex++;
+      state.ttsSubIndex = 0;
+      state.ttsSubChunks = [];
       speakCurrentParagraph();
       return;
     }
 
+    const subChunkText = state.ttsSubChunks[state.ttsSubIndex];
     const mode = state.selectedVoiceURI || 'rv_th_female';
 
+    const onSubChunkEnd = () => {
+      if (state.ttsState === 'playing') {
+        state.ttsSubIndex++;
+        speakCurrentParagraph();
+      }
+    };
+
     if (mode.startsWith('rv_th')) {
-      speakViaResponsiveVoice(targetText, mode === 'rv_th_male' ? 'Thai Male' : 'Thai Female');
+      speakViaResponsiveVoice(subChunkText, mode === 'rv_th_male' ? 'Thai Male' : 'Thai Female', onSubChunkEnd);
     } else if (mode === 'soundoftext_th') {
-      speakViaSoundOfText(targetText);
+      speakViaSoundOfText(subChunkText, onSubChunkEnd);
     } else if (mode === 'cloud_th') {
-      speakViaCloudAudio(targetText);
+      speakViaCloudAudio(subChunkText, onSubChunkEnd);
     } else {
-      speakViaWebSpeech(targetText);
+      speakViaWebSpeech(subChunkText, onSubChunkEnd);
     }
   }
 
-  function speakViaResponsiveVoice(targetText, voiceName = 'Thai Female') {
+  function speakViaResponsiveVoice(targetText, voiceName = 'Thai Female', onEndCallback) {
     if (window.responsiveVoice && typeof window.responsiveVoice.speak === 'function') {
       try {
         window.responsiveVoice.speak(targetText, voiceName, {
           rate: state.ttsRate,
           volume: state.ttsMuted ? 0 : 1,
           onend: () => {
-            if (state.ttsState === 'playing') {
-              state.ttsCurrentIndex++;
-              speakCurrentParagraph();
-            }
+            if (onEndCallback) onEndCallback();
           },
           onerror: () => {
-            if (state.ttsState === 'playing') {
-              speakViaSoundOfText(targetText);
-            }
+            speakViaSoundOfText(targetText, onEndCallback);
           }
         });
         return;
@@ -989,11 +1050,10 @@ document.addEventListener('DOMContentLoaded', () => {
         console.warn('ResponsiveVoice error, falling back to SoundOfText:', e);
       }
     }
-    speakViaSoundOfText(targetText);
+    speakViaSoundOfText(targetText, onEndCallback);
   }
 
-  async function speakViaSoundOfText(targetText) {
-    const textChunk = targetText.substring(0, 100);
+  async function speakViaSoundOfText(targetText, onEndCallback) {
     let audioUrl = '';
 
     try {
@@ -1002,7 +1062,7 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           engine: 'Google',
-          data: { text: textChunk, voice: 'th-TH' }
+          data: { text: targetText, voice: 'th-TH' }
         })
       });
       if (res.ok) {
@@ -1014,7 +1074,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {}
 
     if (!audioUrl) {
-      audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(textChunk)}`;
+      audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(targetText)}`;
     }
 
     if (state.cloudAudio) state.cloudAudio.pause();
@@ -1023,28 +1083,20 @@ document.addEventListener('DOMContentLoaded', () => {
     state.cloudAudio.volume = state.ttsMuted ? 0 : 1;
 
     state.cloudAudio.onended = () => {
-      if (state.ttsState === 'playing') {
-        state.ttsCurrentIndex++;
-        speakCurrentParagraph();
-      }
+      if (onEndCallback) onEndCallback();
     };
 
     state.cloudAudio.onerror = () => {
-      if (state.ttsState === 'playing') {
-        speakViaWebSpeech(targetText);
-      }
+      speakViaWebSpeech(targetText, onEndCallback);
     };
 
     state.cloudAudio.play().catch(err => {
-      if (state.ttsState === 'playing') {
-        speakViaWebSpeech(targetText);
-      }
+      speakViaWebSpeech(targetText, onEndCallback);
     });
   }
 
-  function speakViaCloudAudio(text) {
-    const textChunk = text.substring(0, 200);
-    const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(textChunk)}`;
+  function speakViaCloudAudio(targetText, onEndCallback) {
+    const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(targetText)}`;
 
     if (state.cloudAudio) state.cloudAudio.pause();
     state.cloudAudio = new Audio(audioUrl);
@@ -1052,28 +1104,21 @@ document.addEventListener('DOMContentLoaded', () => {
     state.cloudAudio.volume = state.ttsMuted ? 0 : 1;
 
     state.cloudAudio.onended = () => {
-      if (state.ttsState === 'playing') {
-        state.ttsCurrentIndex++;
-        speakCurrentParagraph();
-      }
+      if (onEndCallback) onEndCallback();
     };
 
     state.cloudAudio.onerror = () => {
-      if (state.ttsState === 'playing') {
-        speakViaWebSpeech(text);
-      }
+      speakViaWebSpeech(targetText, onEndCallback);
     };
 
     state.cloudAudio.play().catch(err => {
-      if (state.ttsState === 'playing') {
-        speakViaWebSpeech(text);
-      }
+      speakViaWebSpeech(targetText, onEndCallback);
     });
   }
 
-  function speakViaWebSpeech(targetText) {
+  function speakViaWebSpeech(targetText, onEndCallback) {
     if (!state.synth) {
-      speakViaResponsiveVoice(targetText);
+      speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
       return;
     }
     try {
@@ -1092,24 +1137,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     utterance.onend = () => {
-      if (state.ttsState === 'playing') {
-        state.ttsCurrentIndex++;
-        speakCurrentParagraph();
-      }
+      if (onEndCallback) onEndCallback();
     };
 
     utterance.onerror = (e) => {
       console.warn('WebSpeech error, fallback to ResponsiveVoice:', e);
-      if (state.ttsState === 'playing') {
-        speakViaResponsiveVoice(targetText);
-      }
+      speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
     };
 
     state.currentUtterance = utterance;
     try {
       state.synth.speak(utterance);
     } catch (err) {
-      speakViaResponsiveVoice(targetText);
+      speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
     }
   }
 
