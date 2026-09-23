@@ -838,6 +838,10 @@ code, pre {
   text-indent: 0;
 }
 
+.chapter-body .welcome-placeholder {
+  white-space: normal;
+}
+
 .chapter-body .welcome-placeholder p {
   text-indent: 0;
   word-break: break-all;

@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentChapterItem: null,
     currentChapterData: null,
     chapterLoadToken: 0,
+    chapterListToken: 0,
     
     bookmarks: JSON.parse(localStorage.getItem('gnr_bookmarks') || '[]'),
     readHistory: JSON.parse(localStorage.getItem('gnr_history') || '{}'),
@@ -155,39 +156,54 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function parseGitHubUrl(urlStr) {
     if (!urlStr || typeof urlStr !== 'string') return null;
-    const cleanUrl = urlStr.trim();
-    
+    const cleanUrl = urlStr.trim().replace(/[?#].*$/, '').replace(/\/+$/, '');
+
     // Pattern e.g. https://github.com/OniSo33/Onisoo/tree/claude/read-4d3wcj/chapters
-    const treeMatch = cleanUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/tree\/([^\/]+(?:\/[^\/]+)*?)\/(.+)/i);
+    // Branch names may contain "/", so the branch/path split is resolved later (resolveTreeSegments)
+    const treeMatch = cleanUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/tree\/(.+)/i);
     if (treeMatch) {
       return {
-        repo: `${treeMatch[1]}/${treeMatch[2]}`,
-        branch: treeMatch[3],
-        path: treeMatch[4]
-      };
-    }
-
-    // Pattern e.g. https://github.com/OniSo33/Onisoo/tree/claude/read-4d3wcj
-    const branchMatch = cleanUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/tree\/(.+)/i);
-    if (branchMatch) {
-      return {
-        repo: `${branchMatch[1]}/${branchMatch[2]}`,
-        branch: branchMatch[3],
-        path: 'chapters'
+        repo: `${treeMatch[1]}/${treeMatch[2].replace(/\.git$/i, '')}`,
+        treeSegments: treeMatch[3].split('/').filter(Boolean).map(seg => decodeURIComponent(seg))
       };
     }
 
     // Pattern e.g. https://github.com/owner/repo or owner/repo
-    const simpleMatch = cleanUrl.match(/(?:github\.com\/)?([^\/]+)\/([^\/]+)/i);
+    const simpleMatch = cleanUrl.match(/(?:github\.com\/)?([^\/\s]+)\/([^\/\s]+)/i);
     if (simpleMatch) {
       return {
-        repo: `${simpleMatch[1]}/${simpleMatch[2]}`,
-        branch: 'main',
-        path: 'chapters'
+        repo: `${simpleMatch[1]}/${simpleMatch[2].replace(/\.git$/i, '')}`,
+        // HEAD = the repository's default branch (works for both the API and raw URLs)
+        branch: 'HEAD',
+        path: DEFAULT_PATH
       };
     }
 
     return null;
+  }
+
+  // Finds which leading segments of a /tree/ URL form an existing branch (longest first)
+  async function resolveTreeSegments(repo, segments) {
+    const [owner, repoName] = repo.split('/');
+    const headers = { 'Accept': 'application/vnd.github.v3+json' };
+    if (state.token) headers['Authorization'] = `token ${state.token}`;
+
+    for (let cut = segments.length; cut >= 1; cut--) {
+      const branch = segments.slice(0, cut).join('/');
+      try {
+        const res = await fetch(`https://api.github.com/repos/${owner}/${repoName}/branches/${encodeURIComponent(branch)}`, { headers });
+        if (res.ok) {
+          return { branch, path: segments.slice(cut).join('/') || DEFAULT_PATH };
+        }
+        if (res.status !== 404) break; // Rate limited or offline: use the heuristic below
+      } catch (e) {
+        break;
+      }
+    }
+
+    // Heuristic when the API can't tell us: the last segment is the folder
+    if (segments.length === 1) return { branch: segments[0], path: DEFAULT_PATH };
+    return { branch: segments.slice(0, -1).join('/'), path: segments[segments.length - 1] };
   }
 
   function init() {
@@ -208,6 +224,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.synth) {
       state.synth.onvoiceschanged = populateVoices;
     }
+
+    // Drop the cache key used by older versions (it did not include the folder path)
+    localStorage.removeItem(`gnr_cache_${state.repo}_${state.branch}`);
 
     // Load initial chapter list
     fetchGitHubChapters();
@@ -236,6 +255,9 @@ document.addEventListener('DOMContentLoaded', () => {
      ========================================================================== */
 
   async function fetchGitHubChapters() {
+    // A newer fetch (e.g. after switching repo) makes this one stale
+    const fetchToken = ++state.chapterListToken;
+    const isStale = () => fetchToken !== state.chapterListToken;
     setLoadingState(true, 'กำลังสตรีมข้อมูลนิยายทั้งหมดจาก GitHub...');
     
     const [owner, repo] = state.repo.split('/');
@@ -281,6 +303,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
+      if (isStale()) return;
+
       // Skip hidden helper files such as .gitkeep
       files = files.filter(f => !f.name.split('/').pop().startsWith('.'));
 
@@ -324,8 +348,9 @@ document.addEventListener('DOMContentLoaded', () => {
       openInitialChapter();
 
     } catch (err) {
+      if (isStale()) return;
       console.warn('GitHub API Tree fetch warning:', err.message);
-      await handleFetchFallback(err.message);
+      await handleFetchFallback(isStale);
     }
   }
 
@@ -368,7 +393,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadChapter(initialIndex);
   }
 
-  async function handleFetchFallback(errorMessage) {
+  async function handleFetchFallback(isStale) {
     // 1) Offline cache from the last successful sync of this repo/branch/path
     const cachedChapters = readChaptersCache();
     if (cachedChapters && cachedChapters.length > 0) {
@@ -414,6 +439,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const results = await Promise.all(probes);
+      if (isStale()) return;
       results.filter(Boolean).forEach(hit => {
         lastFound = Math.max(lastFound, hit.n);
         discoveredChapters.push({
@@ -663,6 +689,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </button>
       </div>
     `;
+    updateInspectorView(chapterItem, '', 0);
     elements.wordCountBadge.innerHTML = `<i class="fa-solid fa-file-lines"></i> - คำ`;
     elements.readTimeBadge.innerHTML = `<i class="fa-solid fa-clock"></i> - นาที`;
 
@@ -1520,7 +1547,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Quick URL Fetcher
-    const handleQuickFetch = () => {
+    const handleQuickFetch = async () => {
       const inputVal = elements.quickUrlInput.value.trim();
       if (!inputVal) {
         showToast('กรุณาวาง URL หรือชื่อ owner/repo ของ GitHub', 'error');
@@ -1528,6 +1555,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const parsed = parseGitHubUrl(inputVal);
+      if (parsed && parsed.treeSegments) {
+        setLoadingState(true, 'กำลังตรวจสอบ branch จากลิงก์...');
+        Object.assign(parsed, await resolveTreeSegments(parsed.repo, parsed.treeSegments));
+      }
       if (parsed) {
         state.repo = parsed.repo;
         state.branch = parsed.branch;
