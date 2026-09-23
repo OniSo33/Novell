@@ -64,6 +64,12 @@ document.addEventListener('DOMContentLoaded', () => {
     currentUtterance: null,
     ttsSession: 0, // Bumped on every stop so late callbacks from old audio are ignored
     ttsEngineAttempts: 0, // Engine fallbacks tried for the current chunk (prevents endless fallback loops)
+    // Both resolved once per reading session (not per chunk) so the voice never flips mid-chapter —
+    // the browser's voice list/order can be unstable (iOS re-reports it as enhanced voices finish
+    // downloading), which otherwise made "auto" jump between engines or between two device voices
+    ttsResolvedMode: null,
+    ttsResolvedDeviceVoice: null,
+    ttsStartAttempt: 0, // guards startTTSReading()'s async voice warm-up against a rapid double press
     
     // HTML5 Cloud Audio Engine & iOS Native Speech Engine
     cloudAudio: new Audio(),
@@ -1150,6 +1156,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // resume continues the same sub-chunk instead of restarting the whole paragraph)
   function stopAllAudioEngines(resetProgress = true) {
     state.ttsSession++;
+    state.ttsStartAttempt++; // cancel any startTTSReading() still waiting on warmUpVoices()
     state.ttsState = 'paused';
     if (resetProgress) {
       state.ttsSubChunks = [];
@@ -1212,6 +1219,56 @@ document.addEventListener('DOMContentLoaded', () => {
     const mode = state.selectedVoiceURI || FREE_DEFAULT_VOICE;
     if (mode !== 'auto') return mode;
     return getThaiVoices().length > 0 ? 'native_th' : 'soundoftext_th';
+  }
+
+  // Cached wrappers around resolveVoiceMode()/the chosen device voice: call these during playback
+  // instead of resolving fresh each chunk. Reset only at the start of a reading session or when the
+  // user explicitly changes the voice — never mid-session — so the same voice reads a whole chapter.
+  function getEffectiveMode() {
+    if (!state.ttsResolvedMode) state.ttsResolvedMode = resolveVoiceMode();
+    return state.ttsResolvedMode;
+  }
+
+  function getEffectiveDeviceVoice() {
+    if (state.ttsResolvedDeviceVoice) return state.ttsResolvedDeviceVoice;
+    const thaiVoices = getThaiVoices();
+    const chosen = state.voices.find(v => v.voiceURI === state.selectedVoiceURI || v.name === state.selectedVoiceURI);
+    const picked = chosen || thaiVoices[0] || null;
+    if (picked) state.ttsResolvedDeviceVoice = picked;
+    return picked;
+  }
+
+  function resetVoiceResolution() {
+    state.ttsResolvedMode = null;
+    state.ttsResolvedDeviceVoice = null;
+  }
+
+  const CLOUD_ONLY_MODES = new Set(['soundoftext_th', 'cloud_th', 'rv_th_female', 'rv_th_male']);
+
+  // iOS reports an empty voice list for a moment after the page loads, before 'voiceschanged' fires
+  // once. Starting to read during that gap would lock the session onto the wrong engine/voice for
+  // its first chunk (still correct after this fix, but inconsistent chunk-to-chunk). Wait briefly for
+  // the real voice list so the very first chunk resolves the same way as the rest of the session —
+  // skipped when the selected mode never uses a device voice anyway.
+  function warmUpVoices(timeoutMs = 800) {
+    const mode = state.selectedVoiceURI || FREE_DEFAULT_VOICE;
+    if (CLOUD_ONLY_MODES.has(mode)) return Promise.resolve();
+    if (!state.synth || getThaiVoices().length > 0) return Promise.resolve();
+    return new Promise(resolve => {
+      let done = false;
+      const prevHandler = state.synth.onvoiceschanged;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        state.synth.onvoiceschanged = prevHandler;
+        resolve();
+      };
+      state.synth.onvoiceschanged = (e) => {
+        if (prevHandler) prevHandler(e);
+        finish();
+      };
+      setTimeout(finish, timeoutMs);
+    });
   }
 
   function populateVoices() {
@@ -1324,11 +1381,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function startTTSReading() {
+  async function startTTSReading() {
     if (!state.currentChapterData) {
       showToast('ยังไม่มีเนื้อหาให้อ่าน', 'error');
       return;
     }
+
+    const startToken = ++state.ttsStartAttempt;
+    // Reflect "playing" immediately: instant button feedback, and it lets pause/stop/switching chapters
+    // during the wait below cancel this call via stopAllAudioEngines() bumping ttsStartAttempt
+    state.ttsState = 'playing';
+    updateTTSUI();
+
+    await warmUpVoices();
+    // Superseded by a second press, a pause/stop, or a chapter change while we were waiting
+    if (state.ttsStartAttempt !== startToken) return;
 
     // Title first, then every heading/paragraph in document order
     state.ttsParagraphElements = [
@@ -1344,6 +1411,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     stopAllAudioEngines();
     state.ttsPrefetch = new Map();
+    resetVoiceResolution(); // fresh session: pick the engine/device voice once and keep it for the whole chapter
     setupMediaSession();
     beginPlayback();
   }
@@ -1425,7 +1493,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     const subChunkText = state.ttsSubChunks[state.ttsSubIndex];
-    const mode = resolveVoiceMode();
+    const mode = getEffectiveMode();
     const session = state.ttsSession;
     state.ttsEngineAttempts = 0;
 
@@ -1624,11 +1692,10 @@ document.addEventListener('DOMContentLoaded', () => {
     utterance.rate = state.ttsRate;
     utterance.volume = state.ttsMuted ? 0 : 1;
 
-    // Pick a Thai voice explicitly (a specific one if chosen); iOS may otherwise use a non-Thai default
-    const thaiVoices = getThaiVoices();
-    const chosen = state.voices.find(v => v.voiceURI === state.selectedVoiceURI || v.name === state.selectedVoiceURI);
-    if (chosen) utterance.voice = chosen;
-    else if (thaiVoices.length > 0) utterance.voice = thaiVoices[0];
+    // Pick a Thai voice explicitly (a specific one if chosen); iOS may otherwise use a non-Thai default.
+    // Cached per session (getEffectiveDeviceVoice) so the same voice reads the whole chapter.
+    const deviceVoice = getEffectiveDeviceVoice();
+    if (deviceVoice) utterance.voice = deviceVoice;
 
     let started = false;
     let finished = false;
@@ -1816,6 +1883,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function changeTTSVoice(newVoiceVal) {
     state.selectedVoiceURI = newVoiceVal;
     localStorage.setItem('gnr_ttsVoiceURI', newVoiceVal);
+    resetVoiceResolution(); // an explicit voice change should take effect immediately, not the old cached one
 
     if (state.ttsState === 'playing') {
       restartCurrentChunk();
