@@ -11,7 +11,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const DEFAULT_PATH = 'chapters';
 
   // Free voice (no sign-up) is the default; ResponsiveVoice is only used when an API key is set
-  const FREE_DEFAULT_VOICE = 'soundoftext_th';
+  const FREE_DEFAULT_VOICE = 'auto';
+  // 0.1s of real silence (a zero-length WAV fails to play on some browsers)
+  const SILENT_WAV = 'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
 
   function getInitialVoice() {
     const saved = localStorage.getItem('gnr_ttsVoiceURI');
@@ -69,7 +71,11 @@ document.addEventListener('DOMContentLoaded', () => {
     iosKeepAliveTimer: null,
     
     // Background Audio Keeper for Screen Lock
-    silentAudio: new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=')
+    silentAudio: new Audio(SILENT_WAV),
+    cloudPrimed: false,
+    audioWatchdog: null,
+    wakeLock: null,
+    ttsPrefetch: new Map()
   };
   state.silentAudio.loop = true;
 
@@ -992,17 +998,32 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- TTS Core System (Paragraph-Chunked Engine) ---
-
-  // --- TTS Core System (Mobile ResponsiveVoice + Dual Audio Engine) ---
+  //
+  // Guarantees: every chunk is spoken exactly once and in order. A chunk only advances after its
+  // engine reports it finished; if an engine silently drops or stalls a chunk, the same chunk is
+  // re-spoken (never skipped). Screen Wake Lock keeps iPhone from auto-locking mid-chapter.
 
   function unlockAudioContextForIOS() {
     if (state.synth) {
       try {
-        state.synth.resume();
+        if (state.synth.paused) state.synth.resume();
       } catch (e) {}
     }
-    if (state.silentAudio && state.silentAudio.paused) {
+    if (state.silentAudio && state.silentAudio.paused && state.ttsState === 'playing') {
       state.silentAudio.play().catch(() => {});
+    }
+    // iOS only lets an <audio> element play from async callbacks if it was started once inside a tap.
+    // We reuse one element for all cloud chunks, so prime it here while nothing is playing.
+    const audio = state.cloudAudio;
+    if (audio && !state.cloudPrimed && audio.paused && state.ttsState !== 'playing') {
+      audio.muted = true;
+      audio.src = SILENT_WAV;
+      audio.play().then(() => {
+        if (audio.src === SILENT_WAV) audio.pause();
+        state.cloudPrimed = true;
+      }).catch(() => {}).finally(() => {
+        audio.muted = state.ttsMuted;
+      });
     }
     if (window.responsiveVoice) {
       try {
@@ -1015,37 +1036,66 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('touchstart', unlockAudioContextForIOS, { passive: true });
   document.addEventListener('click', unlockAudioContextForIOS, { passive: true });
 
-  function splitTextIntoSubChunks(text, maxLen = 130) {
+  const TTS_CHUNK_MAX = 150; // Cloud TTS services reject long text; also keeps iOS utterances short
+
+  // Splits text into chunks <= maxLen without losing or reordering any characters.
+  // Prefers whitespace/sentence boundaries, then Thai word boundaries, never splits a grapheme.
+  function splitTextIntoSubChunks(text, maxLen = TTS_CHUNK_MAX) {
     if (!text || typeof text !== 'string') return [];
     const cleanText = text.trim();
+    if (!cleanText) return [];
     if (cleanText.length <= maxLen) return [cleanText];
 
-    const chunks = [];
-    const regex = /(?<=[.!?\n\u0E2F])\s*|\s+/;
-    const words = cleanText.split(regex);
-    let currentChunk = '';
-
-    for (const word of words) {
-      if (!word) continue;
-      if ((currentChunk + ' ' + word).trim().length <= maxLen) {
-        currentChunk = (currentChunk + ' ' + word).trim();
-      } else {
-        if (currentChunk.length > 0) {
-          chunks.push(currentChunk);
-        }
-        currentChunk = word;
-        while (currentChunk.length > maxLen) {
-          chunks.push(currentChunk.substring(0, maxLen).trim());
-          currentChunk = currentChunk.substring(maxLen).trim();
-        }
+    const segmentBy = (str, granularity) => {
+      if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+        return Array.from(new Intl.Segmenter('th', { granularity }).segment(str), s => s.segment);
       }
-    }
+      return granularity === 'word' ? str.split(/(?<=\s)/) : Array.from(str);
+    };
 
-    if (currentChunk.length > 0) {
-      chunks.push(currentChunk);
-    }
+    // Pieces keep their trailing whitespace, so joining them reproduces the text exactly
+    const pieces = [];
+    cleanText.split(/(?<=\s)/).forEach(piece => {
+      if (piece.length <= maxLen) {
+        pieces.push(piece);
+        return;
+      }
+      segmentBy(piece, 'word').forEach(word => {
+        if (word.length <= maxLen) {
+          pieces.push(word);
+        } else {
+          // A single "word" longer than maxLen: cut on grapheme boundaries (never inside a character cluster)
+          let part = '';
+          segmentBy(word, 'grapheme').forEach(g => {
+            if ((part + g).length > maxLen && part) {
+              pieces.push(part);
+              part = '';
+            }
+            part += g;
+          });
+          if (part) pieces.push(part);
+        }
+      });
+    });
 
-    return chunks.length > 0 ? chunks : [cleanText];
+    const chunks = [];
+    let current = '';
+    pieces.forEach(piece => {
+      if ((current + piece).trim().length > maxLen && current.trim()) {
+        chunks.push(current.trim());
+        current = '';
+      }
+      current += piece;
+    });
+    if (current.trim()) chunks.push(current.trim());
+    return chunks;
+  }
+
+  function clearAudioWatchdog() {
+    if (state.audioWatchdog) {
+      clearInterval(state.audioWatchdog);
+      state.audioWatchdog = null;
+    }
   }
 
   function stopAllAudioEngines() {
@@ -1058,11 +1108,13 @@ document.addEventListener('DOMContentLoaded', () => {
       clearInterval(state.iosKeepAliveTimer);
       state.iosKeepAliveTimer = null;
     }
+    clearAudioWatchdog();
 
     // Detach callbacks from currentUtterance to prevent async event cascades
     if (state.currentUtterance) {
       state.currentUtterance.onend = null;
       state.currentUtterance.onerror = null;
+      state.currentUtterance.onstart = null;
     }
 
     if (window.responsiveVoice) {
@@ -1075,15 +1127,14 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         state.cloudAudio.onended = null;
         state.cloudAudio.onerror = null;
+        state.cloudAudio.ontimeupdate = null;
         state.cloudAudio.pause();
-        state.cloudAudio.currentTime = 0;
       } catch (e) {}
     }
 
     if (state.synth) {
       try {
         state.synth.cancel();
-        state.synth.pause();
       } catch (e) {}
     }
 
@@ -1092,6 +1143,23 @@ document.addEventListener('DOMContentLoaded', () => {
         state.silentAudio.pause();
       } catch (e) {}
     }
+  }
+
+  function getThaiVoices() {
+    if (!state.synth) return [];
+    state.voices = state.synth.getVoices();
+    return state.voices.filter(v =>
+      v.lang.toLowerCase().replace('_', '-').startsWith('th') ||
+      v.name.toLowerCase().includes('thai')
+    );
+  }
+
+  // 'auto' = the device's own Thai voice when it has one (iPhone does: offline, free, no gaps),
+  // otherwise the free SoundOfText MP3 service
+  function resolveVoiceMode() {
+    const mode = state.selectedVoiceURI || FREE_DEFAULT_VOICE;
+    if (mode !== 'auto') return mode;
+    return getThaiVoices().length > 0 ? 'native_th' : 'soundoftext_th';
   }
 
   function populateVoices() {
@@ -1104,23 +1172,16 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // Free engines (no API key needed)
-    addOption('soundoftext_th', '🔊 เสียงอ่าน MP3 (ฟรี — SoundOfText, อ่านต่อได้ตอนล็อกจอ)');
-    addOption('cloud_th', '☁️ เสียงอ่าน Google (ฟรี)');
+    addOption('auto', '✅ อัตโนมัติ (แนะนำ — iPhone ใช้เสียงไทยในเครื่อง ฟรี ไม่ใช้เน็ต)');
     addOption('native_th', '📱 เสียงของเครื่อง (ฟรี — WebSpeech)');
+    addOption('soundoftext_th', '🔊 เสียงอ่าน MP3 (ฟรี — SoundOfText, ต้องใช้เน็ต)');
+    addOption('cloud_th', '☁️ เสียงอ่าน Google (ฟรี, ต้องใช้เน็ต)');
 
     // Extra Thai voices exposed by the browser/OS (free)
-    if (state.synth) {
-      state.voices = state.synth.getVoices();
-      const thaiVoices = state.voices.filter(v =>
-        v.lang.toLowerCase().startsWith('th') ||
-        v.name.toLowerCase().includes('thai')
-      );
-
-      thaiVoices.forEach((voice, index) => {
-        const cleanName = voice.name.replace(/th[-_]TH/gi, '').replace(/com\.apple\..*/gi, '').trim() || `เสียงพากย์ ${index + 1}`;
-        addOption(voice.voiceURI || voice.name, `🍎 เสียงเครื่อง (ฟรี): ${cleanName}`);
-      });
-    }
+    getThaiVoices().forEach((voice, index) => {
+      const cleanName = voice.name.replace(/th[-_]TH/gi, '').replace(/com\.apple\..*/gi, '').trim() || `เสียงพากย์ ${index + 1}`;
+      addOption(voice.voiceURI || voice.name, `🍎 เสียงเครื่อง (ฟรี): ${cleanName}`);
+    });
 
     // ResponsiveVoice needs a registered API key, so only offer it when one is set
     if (state.rvKey) {
@@ -1140,12 +1201,47 @@ document.addEventListener('DOMContentLoaded', () => {
   // Each engine falls back to another on error; cap the chain so a dead network can't loop forever
   function allowEngineAttempt() {
     state.ttsEngineAttempts++;
-    if (state.ttsEngineAttempts <= 4) return true;
+    if (state.ttsEngineAttempts <= 10) return true;
     if (state.ttsState !== 'idle') {
       resetTTSState();
-      showToast('ไม่สามารถเล่นเสียงอ่านได้ — ตรวจสอบอินเทอร์เน็ต หรือเปลี่ยนระบบเสียง', 'error');
+      showToast('ไม่สามารถเล่นเสียงอ่านได้ — ตรวจสอบอินเทอร์เน็ต หรือเปลี่ยนระบบเสียง (หยุดไว้ที่ย่อหน้าเดิม ไม่ข้าม)', 'error');
     }
     return false;
+  }
+
+  // Keep the iPhone screen on while reading: a locked screen suspends the page and cuts the voice
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator) || state.wakeLock || document.visibilityState !== 'visible') return;
+    try {
+      const lock = await navigator.wakeLock.request('screen');
+      if (state.ttsState !== 'playing') {
+        lock.release().catch(() => {});
+        return;
+      }
+      state.wakeLock = lock;
+      lock.addEventListener('release', () => {
+        if (state.wakeLock === lock) state.wakeLock = null;
+      });
+    } catch (e) {}
+  }
+
+  function releaseWakeLock() {
+    if (state.wakeLock) {
+      state.wakeLock.release().catch(() => {});
+      state.wakeLock = null;
+    }
+  }
+
+  function speakWithMode(mode, text, onEnd) {
+    if (mode.startsWith('rv_th')) {
+      speakViaResponsiveVoice(text, mode === 'rv_th_male' ? 'Thai Male' : 'Thai Female', onEnd);
+    } else if (mode === 'soundoftext_th') {
+      speakViaSoundOfText(text, onEnd);
+    } else if (mode === 'cloud_th') {
+      speakViaCloudAudio(text, onEnd);
+    } else {
+      speakViaWebSpeech(text, onEnd);
+    }
   }
 
   function handleTTSTest() {
@@ -1153,21 +1249,13 @@ document.addEventListener('DOMContentLoaded', () => {
     showToast('🔊 กำลังทดสอบระบบเสียง...', 'info');
 
     const testMsg = 'ทดสอบระบบเสียงอ่านภาษาไทยบน ไอโฟน สำเร็จแล้วครับ';
-    const mode = state.selectedVoiceURI || FREE_DEFAULT_VOICE;
-
     stopAllAudioEngines();
     state.ttsState = 'playing';
     state.ttsEngineAttempts = 0;
-
-    if (mode.startsWith('rv_th')) {
-      speakViaResponsiveVoice(testMsg, mode === 'rv_th_male' ? 'Thai Male' : 'Thai Female');
-    } else if (mode === 'soundoftext_th') {
-      speakViaSoundOfText(testMsg);
-    } else if (mode === 'cloud_th') {
-      speakViaCloudAudio(testMsg);
-    } else {
-      speakViaWebSpeech(testMsg);
-    }
+    speakWithMode(resolveVoiceMode(), testMsg, () => {
+      state.ttsState = 'idle';
+      updateTTSUI();
+    });
   }
 
   function handleTTSPlayPause() {
@@ -1185,11 +1273,16 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function startTTSReading() {
-    state.ttsParagraphElements = Array.from(elements.chapterBody.querySelectorAll('p'));
-    if (state.ttsParagraphElements.length === 0) {
-      showToast('ไม่มีเนื้อหาบรรทัดสำหรับอ่าน', 'error');
+    if (!state.currentChapterData) {
+      showToast('ยังไม่มีเนื้อหาให้อ่าน', 'error');
       return;
     }
+
+    // Title first, then every heading/paragraph in document order
+    state.ttsParagraphElements = [
+      elements.chapterTitle,
+      ...elements.chapterBody.querySelectorAll('p, .md-heading')
+    ];
 
     if (state.ttsCurrentIndex >= state.ttsParagraphElements.length) {
       state.ttsCurrentIndex = 0;
@@ -1198,24 +1291,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     stopAllAudioEngines();
-    state.ttsState = 'playing';
-
-    unlockAudioContextForIOS();
-
-    if (state.iosKeepAliveTimer) clearInterval(state.iosKeepAliveTimer);
-    state.iosKeepAliveTimer = setInterval(() => {
-      if (state.ttsState === 'playing' && state.synth && state.synth.paused) {
-        state.synth.resume();
-      }
-    }, 3000);
-
-    if (state.silentAudio) {
-      state.silentAudio.play().catch(() => {});
-    }
-
+    state.ttsPrefetch = new Map();
     setupMediaSession();
-    updateTTSUI();
-    speakCurrentParagraph();
+    beginPlayback();
   }
 
   function setupMediaSession() {
@@ -1228,7 +1306,11 @@ document.addEventListener('DOMContentLoaded', () => {
         album: state.repo
       });
 
-      navigator.mediaSession.setActionHandler('play', () => handleTTSPlayPause());
+      // Lock-screen Play must never act as Pause
+      navigator.mediaSession.setActionHandler('play', () => {
+        if (state.ttsState === 'paused') resumeTTSReading();
+        else if (state.ttsState === 'idle') handleTTSPlayPause();
+      });
       navigator.mediaSession.setActionHandler('pause', () => pauseTTSReading());
       navigator.mediaSession.setActionHandler('stop', () => stopTTSReading());
       
@@ -1239,52 +1321,48 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function getParagraphChunks(index) {
+    const el = state.ttsParagraphElements[index];
+    if (!el) return [];
+    const targetText = el.textContent.trim().replace(/^[#*>]+\s*/, '').trim();
+    return splitTextIntoSubChunks(targetText);
+  }
+
+  // Text of the chunk after the current one (for prefetching cloud audio so there is no gap)
+  function peekNextChunkText() {
+    if (state.ttsSubIndex + 1 < state.ttsSubChunks.length) return state.ttsSubChunks[state.ttsSubIndex + 1];
+    for (let i = state.ttsCurrentIndex + 1; i < state.ttsParagraphElements.length; i++) {
+      const chunks = getParagraphChunks(i);
+      if (chunks.length > 0) return chunks[0];
+    }
+    return null;
+  }
+
   function speakCurrentParagraph() {
     if (state.ttsState !== 'playing') return;
 
-    if (!state.ttsParagraphElements || state.ttsCurrentIndex >= state.ttsParagraphElements.length) {
-      resetTTSState();
-      showToast('อ่านจบบทแล้ว', 'success');
-      return;
+    // Walk forward over empty paragraphs (loop instead of recursion so long chapters can't overflow)
+    while (!state.ttsSubChunks || state.ttsSubChunks.length === 0 || state.ttsSubIndex >= state.ttsSubChunks.length) {
+      if (state.ttsSubChunks && state.ttsSubChunks.length > 0 && state.ttsSubIndex >= state.ttsSubChunks.length) {
+        state.ttsCurrentIndex++;
+      }
+      if (!state.ttsParagraphElements || state.ttsCurrentIndex >= state.ttsParagraphElements.length) {
+        resetTTSState();
+        showToast('อ่านจบบทแล้ว', 'success');
+        return;
+      }
+      state.ttsSubChunks = getParagraphChunks(state.ttsCurrentIndex);
+      state.ttsSubIndex = 0;
+      if (state.ttsSubChunks.length === 0) state.ttsCurrentIndex++;
     }
 
     // Highlight current paragraph on screen without auto-scrolling
     state.ttsParagraphElements.forEach((p, idx) => {
-      if (idx === state.ttsCurrentIndex) {
-        p.classList.add('tts-active-line');
-      } else {
-        p.classList.remove('tts-active-line');
-      }
+      p.classList.toggle('tts-active-line', idx === state.ttsCurrentIndex);
     });
 
-    // Generate sub-chunks for paragraph if not present
-    if (!state.ttsSubChunks || state.ttsSubChunks.length === 0) {
-      const rawText = state.ttsParagraphElements[state.ttsCurrentIndex].textContent.trim();
-      const targetText = rawText.replace(/^[#*->]+\s*/, '').trim();
-
-      if (!targetText) {
-        state.ttsCurrentIndex++;
-        state.ttsSubIndex = 0;
-        state.ttsSubChunks = [];
-        speakCurrentParagraph();
-        return;
-      }
-
-      state.ttsSubChunks = splitTextIntoSubChunks(targetText, 120);
-      state.ttsSubIndex = 0;
-    }
-
-    // Move to next paragraph when all sub-chunks of current paragraph are read
-    if (state.ttsSubIndex >= state.ttsSubChunks.length) {
-      state.ttsCurrentIndex++;
-      state.ttsSubIndex = 0;
-      state.ttsSubChunks = [];
-      speakCurrentParagraph();
-      return;
-    }
-
     const subChunkText = state.ttsSubChunks[state.ttsSubIndex];
-    const mode = state.selectedVoiceURI || FREE_DEFAULT_VOICE;
+    const mode = resolveVoiceMode();
     const session = state.ttsSession;
     state.ttsEngineAttempts = 0;
 
@@ -1296,14 +1374,12 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
 
-    if (mode.startsWith('rv_th')) {
-      speakViaResponsiveVoice(subChunkText, mode === 'rv_th_male' ? 'Thai Male' : 'Thai Female', onSubChunkEnd);
-    } else if (mode === 'soundoftext_th') {
-      speakViaSoundOfText(subChunkText, onSubChunkEnd);
-    } else if (mode === 'cloud_th') {
-      speakViaCloudAudio(subChunkText, onSubChunkEnd);
-    } else {
-      speakViaWebSpeech(subChunkText, onSubChunkEnd);
+    speakWithMode(mode, subChunkText, onSubChunkEnd);
+
+    // Prepare the next chunk's audio while this one plays, so cloud voices don't pause between chunks
+    if (mode === 'soundoftext_th') {
+      const nextText = peekNextChunkText();
+      if (nextText) getSoundOfTextUrl(nextText);
     }
   }
 
@@ -1350,27 +1426,48 @@ document.addEventListener('DOMContentLoaded', () => {
     speakViaSoundOfText(targetText, onEndCallback);
   }
 
+  // SoundOfText renders asynchronously: create the sound, then poll until its MP3 is ready
+  function getSoundOfTextUrl(text) {
+    if (!state.ttsPrefetch) state.ttsPrefetch = new Map();
+    if (state.ttsPrefetch.has(text)) return state.ttsPrefetch.get(text);
+
+    const promise = (async () => {
+      try {
+        const res = await fetch('https://api.soundoftext.com/sounds', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ engine: 'Google', data: { text, voice: 'th-TH' } })
+        });
+        if (!res.ok) return '';
+        const data = await res.json();
+        if (!data.success || !data.id) return '';
+
+        for (let i = 0; i < 20; i++) {
+          const statusRes = await fetch(`https://api.soundoftext.com/sounds/${data.id}`);
+          if (statusRes.ok) {
+            const status = await statusRes.json();
+            if (status.status === 'Done' && status.location) return status.location;
+            if (status.status === 'Error') return '';
+          }
+          await new Promise(r => setTimeout(r, 300));
+        }
+      } catch (e) {}
+      return '';
+    })();
+
+    // Failed lookups are not cached so a retry can try again
+    promise.then(url => {
+      if (!url) state.ttsPrefetch.delete(text);
+    });
+    state.ttsPrefetch.set(text, promise);
+    return promise;
+  }
+
   async function speakViaSoundOfText(targetText, onEndCallback) {
     if (!allowEngineAttempt()) return;
     const session = state.ttsSession;
-    let audioUrl = '';
 
-    try {
-      const res = await fetch('https://api.soundoftext.com/sounds', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          engine: 'Google',
-          data: { text: targetText, voice: 'th-TH' }
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.id) {
-          audioUrl = `https://files.soundoftext.com/${data.id}.mp3`;
-        }
-      }
-    } catch (e) {}
+    let audioUrl = await getSoundOfTextUrl(targetText);
 
     // Paused/stopped while waiting for the server: don't start playing afterwards
     if (session !== state.ttsSession) return;
@@ -1391,25 +1488,47 @@ document.addEventListener('DOMContentLoaded', () => {
   function playCloudAudio(audioUrl, targetText, onEndCallback) {
     const session = state.ttsSession;
 
-    if (state.cloudAudio) {
-      state.cloudAudio.onended = null;
-      state.cloudAudio.onerror = null;
-      state.cloudAudio.pause();
-    }
-    const audio = new Audio(audioUrl);
-    state.cloudAudio = audio;
+    // Reuse the one element that was unlocked by a tap (iOS blocks new Audio() from async code)
+    const audio = state.cloudAudio;
+    audio.onended = null;
+    audio.onerror = null;
+    audio.ontimeupdate = null;
+    clearAudioWatchdog();
+    audio.pause();
+    audio.src = audioUrl;
+    audio.muted = state.ttsMuted; // iOS ignores .volume, but honours .muted
+    audio.defaultPlaybackRate = state.ttsRate;
     audio.playbackRate = state.ttsRate;
-    audio.volume = state.ttsMuted ? 0 : 1;
 
-    let failed = false;
+    let done = false;
     const fallback = () => {
-      if (failed || session !== state.ttsSession) return;
-      failed = true;
+      if (done || session !== state.ttsSession) return;
+      done = true;
+      clearAudioWatchdog();
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      // Same chunk again on the device voice: nothing is skipped
       speakViaWebSpeech(targetText, onEndCallback);
     };
 
+    // Stall detection: if playback makes no progress for 12s (network hiccup), retry this chunk
+    let lastProgress = Date.now();
+    audio.ontimeupdate = () => {
+      lastProgress = Date.now();
+    };
+    state.audioWatchdog = setInterval(() => {
+      if (session !== state.ttsSession) {
+        clearAudioWatchdog();
+        return;
+      }
+      if (!done && Date.now() - lastProgress > 12000) fallback();
+    }, 2000);
+
     audio.onended = () => {
-      if (session !== state.ttsSession) return;
+      if (done || session !== state.ttsSession) return;
+      done = true;
+      clearAudioWatchdog();
       if (onEndCallback) onEndCallback();
     };
     audio.onerror = fallback;
@@ -1419,12 +1538,22 @@ document.addEventListener('DOMContentLoaded', () => {
   function speakViaWebSpeech(targetText, onEndCallback) {
     if (!allowEngineAttempt()) return;
     if (!state.synth) {
-      speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
+      speakViaSoundOfText(targetText, onEndCallback);
       return;
     }
+    const synth = state.synth;
+    const session = state.ttsSession;
+
+    // Only cancel when something is actually queued: cancel() immediately followed by speak()
+    // makes iOS Safari drop the new utterance, which would silently skip text
+    if (state.currentUtterance) {
+      state.currentUtterance.onend = null;
+      state.currentUtterance.onerror = null;
+      state.currentUtterance.onstart = null;
+    }
     try {
-      state.synth.cancel();
-      state.synth.resume();
+      if (synth.speaking || synth.pending) synth.cancel();
+      if (synth.paused) synth.resume();
     } catch (e) {}
 
     const utterance = new SpeechSynthesisUtterance(targetText);
@@ -1432,26 +1561,100 @@ document.addEventListener('DOMContentLoaded', () => {
     utterance.rate = state.ttsRate;
     utterance.volume = state.ttsMuted ? 0 : 1;
 
-    if (state.selectedVoiceURI && !state.selectedVoiceURI.startsWith('rv_th') && state.selectedVoiceURI !== 'soundoftext_th' && state.selectedVoiceURI !== 'native_th' && state.voices.length > 0) {
-      const foundVoice = state.voices.find(v => v.voiceURI === state.selectedVoiceURI || v.name === state.selectedVoiceURI);
-      if (foundVoice) utterance.voice = foundVoice;
-    }
+    // Pick a Thai voice explicitly (a specific one if chosen); iOS may otherwise use a non-Thai default
+    const thaiVoices = getThaiVoices();
+    const chosen = state.voices.find(v => v.voiceURI === state.selectedVoiceURI || v.name === state.selectedVoiceURI);
+    if (chosen) utterance.voice = chosen;
+    else if (thaiVoices.length > 0) utterance.voice = thaiVoices[0];
 
-    utterance.onend = () => {
+    let started = false;
+    let finished = false;
+    let watchdog = null;
+    const startedAt = Date.now();
+    // Generous estimate of how long this chunk can take (Thai ~6 chars/sec at 1x, slow voices included)
+    const expectedMs = Math.max(5000, (targetText.length / 6) * 1000 / state.ttsRate);
+
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(watchdog);
+      if (session !== state.ttsSession) return;
       if (onEndCallback) onEndCallback();
     };
 
-    const session = state.ttsSession;
-    utterance.onerror = (e) => {
-      if (session !== state.ttsSession) return;
-      console.warn('WebSpeech error, fallback to ResponsiveVoice:', e);
-      speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
+    const retrySameChunk = () => {
+      if (finished || session !== state.ttsSession) return;
+      finished = true;
+      clearTimeout(watchdog);
+      speakViaWebSpeech(targetText, onEndCallback);
     };
 
+    // iOS sometimes never fires onend (or drops the utterance entirely), so also watch synth.speaking:
+    // - still speaking -> keep waiting
+    // - was speaking and has been silent for 2 checks -> the chunk is done (onend was lost)
+    // - never started within the expected time -> speak the same chunk again (never skip it)
+    let silentTicks = 0;
+    const tick = () => {
+      if (finished || session !== state.ttsSession) return;
+      const elapsed = Date.now() - startedAt;
+      const busy = synth.speaking || synth.pending;
+      if (synth.speaking) started = true;
+
+      if (busy && (synth.paused || elapsed < expectedMs * 4 + 20000)) {
+        silentTicks = 0;
+        watchdog = setTimeout(tick, 1000);
+        return;
+      }
+      if (busy) {
+        retrySameChunk(); // stuck far beyond any reasonable duration
+        return;
+      }
+      if (started) {
+        silentTicks++;
+        if (silentTicks >= 2) finish();
+        else watchdog = setTimeout(tick, 1000);
+        return;
+      }
+      if (elapsed < expectedMs + 3000) {
+        watchdog = setTimeout(tick, 1000);
+      } else {
+        retrySameChunk();
+      }
+    };
+    watchdog = setTimeout(tick, 1000);
+
+    utterance.onstart = () => {
+      started = true;
+    };
+    utterance.onend = () => {
+      if (!started && Date.now() - startedAt < 150) {
+        // Ended instantly without ever starting: iOS dropped it — speak it again
+        retrySameChunk();
+        return;
+      }
+      finish();
+    };
+    utterance.onerror = (e) => {
+      if (finished || session !== state.ttsSession) return;
+      finished = true;
+      clearTimeout(watchdog);
+      console.warn('WebSpeech error, retrying the same text:', e && e.error);
+      // Transient errors (audio interruptions) usually clear on a second try with the same offline voice;
+      // only then fall back to the online engines
+      if (state.ttsEngineAttempts < 3) {
+        speakViaWebSpeech(targetText, onEndCallback);
+      } else {
+        speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
+      }
+    };
+
+    // Keep a reference: iOS garbage-collects unreferenced utterances and never fires onend
     state.currentUtterance = utterance;
     try {
-      state.synth.speak(utterance);
+      synth.speak(utterance);
     } catch (err) {
+      finished = true;
+      clearTimeout(watchdog);
       speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
     }
   }
@@ -1460,6 +1663,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function beginPlayback() {
     state.ttsState = 'playing';
     unlockAudioContextForIOS();
+    requestWakeLock();
 
     if (state.iosKeepAliveTimer) clearInterval(state.iosKeepAliveTimer);
     state.iosKeepAliveTimer = setInterval(() => {
@@ -1483,9 +1687,21 @@ document.addEventListener('DOMContentLoaded', () => {
     beginPlayback();
   }
 
+  // Coming back to the page (unlock, app switch): if the voice died while hidden, pick up the same chunk
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || state.ttsState !== 'playing') return;
+    requestWakeLock();
+    const synthBusy = state.synth && (state.synth.speaking || state.synth.pending) && !state.synth.paused;
+    const audioBusy = state.cloudAudio && !state.cloudAudio.paused && !state.cloudAudio.ended;
+    if (!synthBusy && !audioBusy) {
+      restartCurrentChunk();
+    }
+  });
+
   function pauseTTSReading() {
     if (state.ttsState === 'playing') {
       stopAllAudioEngines();
+      releaseWakeLock();
       state.ttsState = 'paused';
       updateTTSUI();
       showToast(`หยุดอ่านชั่วคราว ที่ย่อหน้าที่ ${state.ttsCurrentIndex + 1}`, 'info');
@@ -1494,8 +1710,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function resumeTTSReading() {
     if (state.ttsState === 'paused') {
-      stopAllAudioEngines();
-      beginPlayback();
+      // Resume re-reads the interrupted chunk from its start, so no words are lost
+      restartCurrentChunk();
       showToast(`อ่านต่อจากย่อหน้าที่ ${state.ttsCurrentIndex + 1}...`, 'info');
     }
   }
@@ -1511,7 +1727,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const cloudPlaying = state.cloudAudio && !state.cloudAudio.paused;
     if (state.cloudAudio) {
-      state.cloudAudio.volume = state.ttsMuted ? 0 : 1;
+      state.cloudAudio.muted = state.ttsMuted;
     }
 
     // Speech engines can't change volume mid-sentence, so re-speak the current chunk at the new volume
@@ -1550,6 +1766,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function resetTTSState() {
     stopAllAudioEngines();
+    releaseWakeLock();
     state.ttsState = 'idle';
     state.currentUtterance = null;
     state.ttsCurrentIndex = 0;
