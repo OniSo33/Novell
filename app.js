@@ -1373,10 +1373,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // Strip symbols that should never be spoken aloud: leftover markdown syntax (a Thai voice reads
+  // "*" as "ดอกจันทร์"/asterisk), whether it's a rendering gap or content from a non-Markdown source
+  // (plain text/JSON chapters skip Markdown rendering entirely, so raw ** or # can reach here as-is)
+  function stripForSpeech(text) {
+    return text
+      .replace(/[*_`#]/g, '')
+      .replace(/^[>•]\s*/gm, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+  }
+
   function getParagraphChunks(index) {
     const el = state.ttsParagraphElements[index];
     if (!el) return [];
-    const targetText = el.textContent.trim().replace(/^[#*>]+\s*/, '').trim();
+    const targetText = stripForSpeech(el.textContent);
     return splitTextIntoSubChunks(targetText);
   }
 
