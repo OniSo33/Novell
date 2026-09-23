@@ -1313,7 +1313,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.ttsEngineAttempts <= 10) return true;
     if (state.ttsState !== 'idle') {
       resetTTSState();
-      showToast('ไม่สามารถเล่นเสียงอ่านได้ — ตรวจสอบอินเทอร์เน็ต หรือเปลี่ยนระบบเสียง (หยุดไว้ที่ย่อหน้าเดิม ไม่ข้าม)', 'error');
+      showToast(`เสียงอ่านหยุดทำงาน — กดปุ่ม "อ่านให้ฟัง" อีกครั้งเพื่ออ่านต่อจากย่อหน้าที่ ${state.ttsCurrentIndex + 1} (ลองเปลี่ยนระบบเสียงถ้ายังไม่ได้ผล)`, 'error', 8000);
     }
     return false;
   }
@@ -1722,23 +1722,42 @@ document.addEventListener('DOMContentLoaded', () => {
       if (onEndCallback) onEndCallback();
     };
 
+    // A silently dead WebSpeech engine (a known iOS bug after call/Siri interruptions — speak()
+    // never fires onstart/onend/onerror again) must not be retried on itself forever; escalate to a
+    // different engine after a couple of tries, the same way the onerror handler below already does
     const retrySameChunk = () => {
       if (finished || session !== state.ttsSession) return;
       finished = true;
       clearTimeout(watchdog);
-      speakViaWebSpeech(targetText, onEndCallback);
+      if (state.ttsEngineAttempts < 3) {
+        speakViaWebSpeech(targetText, onEndCallback);
+      } else {
+        speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
+      }
     };
 
     // iOS sometimes never fires onend (or drops the utterance entirely), so also watch synth.speaking:
-    // - still speaking -> keep waiting
+    // - never started at all -> a dead engine call; detect it FAST (fixed ~3s, not scaled by text
+    //   length — a working engine always starts speaking almost immediately, so waiting proportional
+    //   to how long a long chunk would take to finish just left the user sitting in silence)
+    // - still speaking -> keep waiting (this part does scale with text length)
     // - was speaking and has been silent for 2 checks -> the chunk is done (onend was lost)
-    // - never started within the expected time -> speak the same chunk again (never skip it)
+    const NEVER_STARTED_TIMEOUT_MS = 3000;
     let silentTicks = 0;
     const tick = () => {
       if (finished || session !== state.ttsSession) return;
       const elapsed = Date.now() - startedAt;
       const busy = synth.speaking || synth.pending;
       if (synth.speaking) started = true;
+
+      if (!started) {
+        if (elapsed < NEVER_STARTED_TIMEOUT_MS) {
+          watchdog = setTimeout(tick, 300);
+        } else {
+          retrySameChunk();
+        }
+        return;
+      }
 
       if (busy && (synth.paused || elapsed < expectedMs * 4 + 20000)) {
         silentTicks = 0;
@@ -1749,19 +1768,11 @@ document.addEventListener('DOMContentLoaded', () => {
         retrySameChunk(); // stuck far beyond any reasonable duration
         return;
       }
-      if (started) {
-        silentTicks++;
-        if (silentTicks >= 2) finish();
-        else watchdog = setTimeout(tick, 1000);
-        return;
-      }
-      if (elapsed < expectedMs + 3000) {
-        watchdog = setTimeout(tick, 1000);
-      } else {
-        retrySameChunk();
-      }
+      silentTicks++;
+      if (silentTicks >= 2) finish();
+      else watchdog = setTimeout(tick, 1000);
     };
-    watchdog = setTimeout(tick, 1000);
+    watchdog = setTimeout(tick, 300);
 
     utterance.onstart = () => {
       started = true;
@@ -1807,9 +1818,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (state.iosKeepAliveTimer) clearInterval(state.iosKeepAliveTimer);
     state.iosKeepAliveTimer = setInterval(() => {
-      if (state.ttsState === 'playing' && state.synth && state.synth.paused) {
-        state.synth.resume();
-      }
+      if (state.ttsState !== 'playing') return;
+      if (state.synth && state.synth.paused) state.synth.resume();
+      if (!state.wakeLock) requestWakeLock(); // some browsers release it on their own; keep re-asking
     }, 3000);
 
     if (state.silentAudio) state.silentAudio.play().catch(() => {});
@@ -2196,19 +2207,21 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.lastSyncTime.textContent = `อัปเดตล่าสุด: ${timeStr}`;
   }
 
-  function showToast(message, type = 'info') {
+  function showToast(message, type = 'info', duration) {
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
     toast.innerHTML = `<i class="fa-solid ${type === 'success' ? 'fa-check-circle' : type === 'error' ? 'fa-triangle-exclamation' : 'fa-info-circle'}"></i> ${escapeHtml(message)}`;
     
     elements.toastContainer.appendChild(toast);
     
+    // Errors get more time on screen by default — easy to miss a 3.2s toast while just listening
+    const shownFor = duration || (type === 'error' ? 6000 : 3200);
     setTimeout(() => {
       toast.style.opacity = '0';
       toast.style.transform = 'translateY(10px)';
       toast.style.transition = 'all 0.3s ease';
       setTimeout(() => toast.remove(), 300);
-    }, 3200);
+    }, shownFor);
   }
 
   function renderEmptyState(message) {
