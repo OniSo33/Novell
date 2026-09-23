@@ -163,6 +163,9 @@ document.addEventListener('DOMContentLoaded', () => {
     fontFamilySelect: document.getElementById('fontFamilySelect'),
     lineHeightSelect: document.getElementById('lineHeightSelect'),
     
+    branchNameLabel: document.getElementById('branchNameLabel'),
+    repoNameLabel: document.getElementById('repoNameLabel'),
+
     toastContainer: document.getElementById('toastContainer')
   };
 
@@ -300,6 +303,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const fetchToken = ++state.chapterListToken;
     const isStale = () => fetchToken !== state.chapterListToken;
     setLoadingState(true, 'กำลังสตรีมข้อมูลนิยายทั้งหมดจาก GitHub...');
+    // Show the source actually being read (these labels were hard-coded before)
+    elements.repoNameLabel.textContent = state.repo;
+    elements.branchNameLabel.textContent = state.branch;
+    elements.branchNameLabel.title = `Branch: ${state.branch} / ${state.path}`;
     
     const [owner, repo] = state.repo.split('/');
     const cleanPath = state.path.replace(/^\/|\/$/g, '');
