@@ -1,21 +1,28 @@
 /**
  * GitHub Novel Data Fetcher, Reader & Scraper
  * Repository Target: OniSo33/Onisoo
- * Branch: claude/data-storage-location-85vk0x / chapters
+ * Branch: claude/read-4d3wcj / chapters
  */
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Default Source (single place so settings reset and first load always agree)
+  const DEFAULT_REPO = 'OniSo33/Onisoo';
+  const DEFAULT_BRANCH = 'claude/read-4d3wcj';
+  const DEFAULT_PATH = 'chapters';
+
   // Config State
   const state = {
-    repo: localStorage.getItem('gnr_repo') || 'OniSo33/Onisoo',
-    branch: localStorage.getItem('gnr_branch') || 'claude/read-4d3wcj',
-    path: localStorage.getItem('gnr_path') || 'chapters',
+    repo: localStorage.getItem('gnr_repo') || DEFAULT_REPO,
+    branch: localStorage.getItem('gnr_branch') || DEFAULT_BRANCH,
+    path: localStorage.getItem('gnr_path') || DEFAULT_PATH,
     token: localStorage.getItem('gnr_token') || '',
     
     chapters: [],
     filteredChapters: [],
     currentChapterIndex: -1,
+    currentChapterItem: null,
     currentChapterData: null,
+    chapterLoadToken: 0,
     
     bookmarks: JSON.parse(localStorage.getItem('gnr_bookmarks') || '[]'),
     readHistory: JSON.parse(localStorage.getItem('gnr_history') || '{}'),
@@ -39,6 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ttsSubIndex: 0,
     synth: window.speechSynthesis || null,
     currentUtterance: null,
+    ttsSession: 0, // Bumped on every stop so late callbacks from old audio are ignored
     
     // HTML5 Cloud Audio Engine & iOS Native Speech Engine
     cloudAudio: new Audio(),
@@ -231,6 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setLoadingState(true, 'กำลังสตรีมข้อมูลนิยายทั้งหมดจาก GitHub...');
     
     const [owner, repo] = state.repo.split('/');
+    const cleanPath = state.path.replace(/^\/|\/$/g, '');
     // Use GitHub Git Trees API (recursive=1) to fetch 100% of all files in branch without pagination limits
     const treeApiUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(state.branch)}?recursive=1`;
     
@@ -247,26 +256,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const treeData = await treeResponse.json();
         if (treeData && Array.isArray(treeData.tree)) {
           // Filter all items inside the target path directory
-          const targetPrefix = state.path ? `${state.path.replace(/^\/|\/$/g, '')}/` : '';
+          const targetPrefix = cleanPath ? `${cleanPath}/` : '';
           files = treeData.tree
             .filter(item => item.type === 'blob' && item.path.startsWith(targetPrefix))
-            .map(item => {
-              const fileName = item.path.substring(targetPrefix.length);
-              return {
-                name: fileName,
-                path: item.path,
-                sha: item.sha,
-                size: item.size || 0,
-                type: 'file',
-                download_url: `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${item.path}`
-              };
-            });
+            .map(item => ({
+              name: item.path.substring(targetPrefix.length),
+              path: item.path,
+              sha: item.sha,
+              size: item.size || 0,
+              download_url: `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${item.path}`
+            }));
         }
       }
 
       // Fallback to standard contents API if tree API returns empty
       if (files.length === 0) {
-        const contentsApiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${state.path}?ref=${encodeURIComponent(state.branch)}&per_page=100`;
+        const contentsApiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${cleanPath}?ref=${encodeURIComponent(state.branch)}&per_page=100`;
         const res = await fetch(contentsApiUrl, { headers });
         if (res.ok) {
           const contentsData = await res.json();
@@ -276,93 +281,155 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
+      // Skip hidden helper files such as .gitkeep
+      files = files.filter(f => !f.name.split('/').pop().startsWith('.'));
+
       if (files.length === 0) {
         throw new Error('ไม่สามารถดึงข้อมูลรายการไฟล์จาก GitHub API ได้');
       }
 
       // Format and sort 100% of chapters
+      const cachedById = new Map((readChaptersCache() || []).map(c => [c.id, c]));
       state.chapters = files.map((file, index) => {
         // Extract numbers e.g. 0000, 0001, chapter_12, etc.
         const matchNum = file.name.match(/\d+/);
-        const num = matchNum ? parseInt(matchNum[0], 10) : index;
-        
-        return {
-          id: file.sha || `ch-${index}`,
+        const filePath = file.path || (cleanPath ? `${cleanPath}/${file.name}` : file.name);
+        const chapter = {
+          // File path is stable across edits (unlike the blob sha), so bookmarks survive updates
+          id: filePath,
+          sha: file.sha || '',
           name: file.name,
-          number: num,
-          rawUrl: file.download_url || `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${state.path}/${file.name}`,
+          number: matchNum ? parseInt(matchNum[0], 10) : index,
+          rawUrl: file.download_url || `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${filePath}`,
           size: file.size || 0,
           content: null,
           loaded: false
         };
+
+        // Reuse offline-cached content when the file has not changed since it was cached
+        const cached = cachedById.get(chapter.id);
+        if (cached && cached.content && cached.sha && cached.sha === chapter.sha) {
+          chapter.content = cached.content;
+          chapter.loaded = true;
+        }
+        return chapter;
       });
 
+      migrateLegacyChapterIds(state.chapters);
       sortChapters();
       updateLastSyncTime();
       showToast(`ดึงข้อมูลครบถ้วน! พบทั้งหมด ${state.chapters.length} บท`, 'success');
       setLoadingState(false, `ดึงข้อมูลครบ 100% (${state.chapters.length} บท)`);
-
-      if (state.chapters.length > 0) {
-        const lastReadId = localStorage.getItem('gnr_lastReadId');
-        let initialIndex = 0;
-        if (lastReadId) {
-          const foundIdx = state.chapters.findIndex(c => c.id === lastReadId || c.name === lastReadId);
-          if (foundIdx !== -1) initialIndex = foundIdx;
-        }
-        loadChapter(initialIndex);
-      } else {
-        renderEmptyState('ไม่พบไฟล์บทนิยายในโฟลเดอร์นี้');
-      }
+      saveChaptersToCache();
+      openInitialChapter();
 
     } catch (err) {
       console.warn('GitHub API Tree fetch warning:', err.message);
-      handleFetchFallback(err.message);
+      await handleFetchFallback(err.message);
     }
   }
 
-  async function handleFetchFallback(errorMessage) {
-    const [owner, repo] = state.repo.split('/');
-    
-    // Direct raw probes for real novel chapter files (0000 to 0100)
-    const candidateNames = [
-      '0000-บทนำ-ฤดูเก็บเกี่ยว.json',
-      '0000.json', '0001.json', '0002.json', '0003.json', '0004.json', '0005.json',
-      '0006.json', '0007.json', '0008.json', '0009.json', '0010.json', '0011.json',
-      '0012.json', '0013.json', '0014.json', '0015.json', '0016.json', '0017.json'
-    ];
+  // Older versions keyed bookmarks/history by blob sha, which changes on every edit.
+  function migrateLegacyChapterIds(chapters) {
+    const bySha = new Map(chapters.filter(c => c.sha).map(c => [c.sha, c.id]));
+    if (bySha.size === 0) return;
 
-    // Generate up to 100 real chapter probes
-    for (let i = 0; i <= 100; i++) {
-      const numStr = i.toString().padStart(4, '0');
-      const fname1 = `${numStr}.json`;
-      const fname2 = `chapter_${i}.json`;
-      if (!candidateNames.includes(fname1)) candidateNames.push(fname1);
-      if (!candidateNames.includes(fname2)) candidateNames.push(fname2);
+    state.bookmarks = [...new Set(state.bookmarks.map(id => bySha.get(id) || id))];
+    localStorage.setItem('gnr_bookmarks', JSON.stringify(state.bookmarks));
+
+    Object.keys(state.readHistory).forEach(id => {
+      const newId = bySha.get(id);
+      if (newId) {
+        delete state.readHistory[id];
+        state.readHistory[newId] = true;
+      }
+    });
+    localStorage.setItem('gnr_history', JSON.stringify(state.readHistory));
+
+    const lastReadId = localStorage.getItem('gnr_lastReadId');
+    if (lastReadId && bySha.has(lastReadId)) {
+      localStorage.setItem('gnr_lastReadId', bySha.get(lastReadId));
+    }
+  }
+
+  function openInitialChapter() {
+    if (state.chapters.length === 0) {
+      renderEmptyState('ไม่พบไฟล์บทนิยายในโฟลเดอร์นี้');
+      return;
     }
 
-    const discoveredChapters = [];
+    // Look up in the (possibly filtered) list that loadChapter indexes into
+    const lastReadId = localStorage.getItem('gnr_lastReadId');
+    let initialIndex = 0;
+    if (lastReadId) {
+      const foundIdx = state.filteredChapters.findIndex(c => c.id === lastReadId || c.name === lastReadId);
+      if (foundIdx !== -1) initialIndex = foundIdx;
+    }
+    loadChapter(initialIndex);
+  }
 
-    // Probe raw candidate files
-    for (let i = 0; i < candidateNames.length; i++) {
-      const fileName = candidateNames[i];
-      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${state.path}/${encodeURIComponent(fileName)}`;
-      
-      try {
-        const res = await fetch(rawUrl, { method: 'HEAD' });
-        if (res.ok || res.status === 200) {
-          const matchNum = fileName.match(/\d+/);
-          const num = matchNum ? parseInt(matchNum[0], 10) : i;
-          discoveredChapters.push({
-            id: `raw-${i}-${fileName}`,
-            name: fileName,
-            number: num,
-            rawUrl: rawUrl,
-            size: 1024,
-            content: null,
-            loaded: false
-          });
-        }
-      } catch (e) {}
+  async function handleFetchFallback(errorMessage) {
+    // 1) Offline cache from the last successful sync of this repo/branch/path
+    const cachedChapters = readChaptersCache();
+    if (cachedChapters && cachedChapters.length > 0) {
+      state.chapters = cachedChapters;
+      sortChapters();
+      setLoadingState(false, `ใช้ข้อมูลออฟไลน์ (${state.chapters.length} บท)`);
+      showToast(`เชื่อมต่อ GitHub API ไม่ได้ — ใช้รายการบทที่บันทึกไว้ ${state.chapters.length} บท`, 'info');
+      openInitialChapter();
+      return;
+    }
+
+    // 2) Direct raw probes for common chapter file names (raw server has no API rate limit)
+    setLoadingState(true, 'กำลังค้นหาไฟล์บทผ่าน Raw URL...');
+    const [owner, repo] = state.repo.split('/');
+    const cleanPath = state.path.replace(/^\/|\/$/g, '');
+    const extensions = ['md', 'txt', 'json'];
+    const candidatesFor = (n) => {
+      const padded = n.toString().padStart(4, '0');
+      const names = [];
+      extensions.forEach(ext => {
+        names.push(`${padded}.${ext}`, `chapter_${n}.${ext}`);
+      });
+      return names;
+    };
+
+    const discoveredChapters = [];
+    const batchSize = 10;
+    const maxGap = 20;
+    let lastFound = -1;
+
+    for (let start = 0; start <= 100; start += batchSize) {
+      const probes = [];
+      for (let n = start; n < start + batchSize && n <= 100; n++) {
+        candidatesFor(n).forEach(fileName => {
+          const filePath = cleanPath ? `${cleanPath}/${fileName}` : fileName;
+          const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${state.branch}/${filePath}`;
+          probes.push(
+            fetch(rawUrl, { method: 'HEAD' })
+              .then(res => (res.ok ? { n, fileName, filePath, rawUrl } : null))
+              .catch(() => null)
+          );
+        });
+      }
+
+      const results = await Promise.all(probes);
+      results.filter(Boolean).forEach(hit => {
+        lastFound = Math.max(lastFound, hit.n);
+        discoveredChapters.push({
+          id: hit.filePath,
+          sha: '',
+          name: hit.fileName,
+          number: hit.n,
+          rawUrl: hit.rawUrl,
+          size: 0,
+          content: null,
+          loaded: false
+        });
+      });
+
+      // Stop once we are well past the last chapter found
+      if (start + batchSize - 1 > lastFound + maxGap) break;
     }
 
     if (discoveredChapters.length > 0) {
@@ -370,11 +437,11 @@ document.addEventListener('DOMContentLoaded', () => {
       sortChapters();
       setLoadingState(false, `ดึงตรงผ่าน Direct Raw (${state.chapters.length} บท)`);
       showToast(`ดึงข้อมูลนิยายสำเร็จ! พบ ${state.chapters.length} บท`, 'success');
-      loadChapter(0);
+      openInitialChapter();
       return;
     }
 
-    // Display clear Rate Limit warning with Token Token guide
+    // Display clear Rate Limit warning with Token guide
     setLoadingState(false, 'ติด Rate Limit (ใส่ Token ในตั้งค่า)');
     showToast(`🔒 GitHub API Rate Limit: ใส่ Token ใน ⚙️ ตั้งค่า เพื่อดึงทุกตอนได้ไม่จำกัด`, 'error');
     renderEmptyState('ติดขัด GitHub Rate Limit (60 ครั้ง/ชม.): กรุณาใส่ GitHub Token ใน ⚙️ ตั้งค่า เพื่อดึงนิยายทุกตอนได้ไม่จำกัด');
@@ -383,8 +450,17 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadChapter(index) {
     if (index < 0 || index >= state.filteredChapters.length) return;
     
+    // Guards against a slower earlier request overwriting the chapter the user picked last
+    const loadToken = ++state.chapterLoadToken;
+
+    // Never keep reading the previous chapter's paragraphs aloud over the new one
+    if (state.ttsState !== 'idle') {
+      resetTTSState();
+    }
+
     state.currentChapterIndex = index;
     const chapterItem = state.filteredChapters[index];
+    state.currentChapterItem = chapterItem;
     
     renderSidebarList(); // Update active selection in sidebar
     updateNavigationButtons();
@@ -396,7 +472,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="welcome-placeholder">
         <div class="placeholder-icon"><i class="fa-solid fa-spinner fa-spin"></i></div>
         <h3>กำลังสกัดเนื้อหาจาก Raw Content URL...</h3>
-        <p>${chapterItem.rawUrl}</p>
+        <p>${escapeHtml(chapterItem.rawUrl)}</p>
       </div>
     `;
 
@@ -417,6 +493,8 @@ document.addEventListener('DOMContentLoaded', () => {
         chapterItem.loaded = true;
       }
 
+      if (loadToken !== state.chapterLoadToken) return;
+
       // Process & Parse Payload
       parseAndDisplayChapter(chapterItem, rawText);
 
@@ -424,21 +502,24 @@ document.addEventListener('DOMContentLoaded', () => {
       saveChaptersToCache();
       
       // Save last read history
-      localStorage.setItem('gnr_lastReadId', chapterItem.id || chapterItem.name);
+      localStorage.setItem('gnr_lastReadId', chapterItem.id);
       state.readHistory[chapterItem.id] = true;
       localStorage.setItem('gnr_history', JSON.stringify(state.readHistory));
+      renderSidebarList();
 
     } catch (err) {
+      if (loadToken !== state.chapterLoadToken) return;
       console.error('Error loading chapter content:', err);
-      // Fallback content display if raw URL fetch fails
-      const fallbackContent = generateFallbackChapterContent(chapterItem);
-      parseAndDisplayChapter(chapterItem, JSON.stringify(fallbackContent, null, 2));
+      renderChapterError(chapterItem, err.message);
     }
   }
 
   function parseAndDisplayChapter(chapterItem, rawText) {
+    const baseName = chapterItem.name.replace(/\.[^/.]+$/, '');
+    const isMarkdown = /\.(md|markdown)$/i.test(chapterItem.name);
+
     let parsedData = {
-      title: `บทที่ ${chapterItem.number}: ${chapterItem.name.replace(/\.[^/.]+$/, "")}`,
+      title: `ตอนที่ ${chapterItem.number}: ${baseName}`,
       subtitle: `GitHub Raw Data • ${state.repo}`,
       body: ''
     };
@@ -448,6 +529,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Try parsing as JSON first
     try {
       const json = JSON.parse(rawText);
+      if (json === null || typeof json !== 'object') throw new Error('not a JSON object');
       isJson = true;
       parsedData.title = json.title || json.name || json.chapter_name || parsedData.title;
       parsedData.subtitle = json.subtitle || json.author || parsedData.subtitle;
@@ -466,6 +548,21 @@ document.addEventListener('DOMContentLoaded', () => {
       parsedData.body = rawText;
     }
 
+    let bodyHtml;
+    if (!isJson && isMarkdown) {
+      const md = renderMarkdown(parsedData.body);
+      if (md.title) parsedData.title = md.title;
+      bodyHtml = md.html;
+    } else {
+      // Format body paragraphs cleanly (split by single or double newlines)
+      bodyHtml = parsedData.body
+        .split(/\n+/)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+        .map(p => `<p>${escapeHtml(p)}</p>`)
+        .join('');
+    }
+
     state.currentChapterData = {
       chapterItem,
       rawText,
@@ -476,46 +573,108 @@ document.addEventListener('DOMContentLoaded', () => {
     // Render UI
     elements.chapterTitle.textContent = parsedData.title;
     elements.chapterSubtitle.textContent = parsedData.subtitle;
-    
-    // Format body paragraphs cleanly (split by single or double newlines)
-    const rawParagraphs = parsedData.body
-      .split(/\n+/)
-      .map(p => p.trim())
-      .filter(p => p.length > 0);
+    elements.chapterBody.innerHTML = bodyHtml || `<p>${escapeHtml(parsedData.body)}</p>`;
 
-    const formattedParagraphs = rawParagraphs
-      .map(p => `<p>${escapeHtml(p)}</p>`)
-      .join('');
-
-    elements.chapterBody.innerHTML = formattedParagraphs || `<p>${escapeHtml(parsedData.body)}</p>`;
-
-    // Update metadata badges
-    const totalChars = parsedData.body.length;
-    const wordCount = parsedData.body.trim().split(/\s+/).length;
+    // Update metadata badges from the rendered text (no markdown symbols)
+    const visibleText = elements.chapterBody.textContent;
+    const wordCount = countWords(visibleText);
     const readTimeMinutes = Math.max(1, Math.ceil(wordCount / 180));
 
     elements.wordCountBadge.innerHTML = `<i class="fa-solid fa-file-lines"></i> ${wordCount.toLocaleString()} คำ`;
     elements.readTimeBadge.innerHTML = `<i class="fa-solid fa-clock"></i> ~${readTimeMinutes} นาที`;
-    elements.chapterCategory.innerHTML = `<i class="fa-solid fa-folder"></i> ${state.path}`;
+    elements.chapterCategory.innerHTML = `<i class="fa-solid fa-folder"></i> ${escapeHtml(state.path)}`;
 
     // Update Inspector View
-    updateInspectorView(chapterItem, rawText, totalChars);
+    updateInspectorView(chapterItem, rawText, parsedData.body.length);
     
     // Update Bookmark button UI
     updateBookmarkUI(chapterItem.id);
   }
 
-  function generateFallbackChapterContent(chapterItem) {
-    return {
-      title: `บทที่ ${chapterItem.number}: จุดเริ่มต้นของการเดินทางอันยิ่งใหญ่`,
-      author: `OniSo33`,
-      created_at: new Date().toISOString(),
-      paragraphs: [
-        `สายลมเย็นพัดผ่านยอดเขาสูงตระหง่านในยามเช้าตรู่ เสียงนกกระพือปีกบินออกหาสายหมอกอันอบอุ่น เรื่องราวบทนี้ถูกสกัดมาจากคลังข้อมูล GitHub Repository (${state.repo})`,
-        `ข้อมูลชุดนี้ถูกจัดเก็บอย่างเป็นระเบียบในโฟลเดอร์ ${state.path} ซึ่งรองรับการอัปเดตแบบเรียลไทม์จากผู้เขียนโดยตรง ทุกครั้งที่มีการเพิ่มหรือแก้ไขไฟล์ใน GitHub ระบบหน้าเว็บนี้จะแสดงบทใหม่ทันที`,
-        `การดึงข้อมูลทำงานด้วยสถาปัตยกรรม Client-Side ดึงข้อมูลผ่าน GitHub REST API และ Raw Content Server เพื่อมอบประสบการณ์การอ่านที่ราบรื่นและรวดเร็วที่สุด`
-      ]
-    };
+  // Minimal Markdown renderer for chapter files: headings, dividers, quotes, lists, bold/italic/code
+  function renderMarkdown(text) {
+    let title = '';
+    let seenContent = false;
+    const blocks = [];
+
+    text.split(/\n/).forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+
+      const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        // The first H1 before any content is the chapter title
+        if (heading[1].length === 1 && !title && !seenContent) {
+          title = heading[2].replace(/\s*#+\s*$/, '').trim();
+          return;
+        }
+        blocks.push(`<h3 class="md-heading">${renderInlineMarkdown(heading[2])}</h3>`);
+      } else if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+        blocks.push('<hr class="md-divider">');
+      } else if (/^>\s?/.test(trimmed)) {
+        blocks.push(`<blockquote class="md-quote"><p>${renderInlineMarkdown(trimmed.replace(/^>\s?/, ''))}</p></blockquote>`);
+      } else if (/^[-*+]\s+/.test(trimmed)) {
+        blocks.push(`<p class="md-list-item">• ${renderInlineMarkdown(trimmed.replace(/^[-*+]\s+/, ''))}</p>`);
+      } else {
+        blocks.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+      }
+      seenContent = true;
+    });
+
+    return { title, html: blocks.join('') };
+  }
+
+  function renderInlineMarkdown(str) {
+    return escapeHtml(str)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/\*([^*\s][^*]*)\*/g, '<em>$1</em>');
+  }
+
+  // Thai has no spaces between words, so use the word segmenter when the browser has one
+  function countWords(text) {
+    const cleanText = text.trim();
+    if (!cleanText) return 0;
+    if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+      let count = 0;
+      const segmenter = new Intl.Segmenter('th', { granularity: 'word' });
+      for (const segment of segmenter.segment(cleanText)) {
+        if (segment.isWordLike) count++;
+      }
+      return count;
+    }
+    return cleanText.split(/\s+/).length;
+  }
+
+  function renderChapterError(chapterItem, message) {
+    state.currentChapterData = null;
+
+    elements.chapterTitle.textContent = `โหลดตอนที่ ${chapterItem.number} ไม่สำเร็จ`;
+    elements.chapterSubtitle.textContent = `ไฟล์: ${chapterItem.name}`;
+    elements.chapterBody.innerHTML = `
+      <div class="welcome-placeholder">
+        <div class="placeholder-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
+        <h3>ไม่สามารถโหลดเนื้อหาตอนนี้ได้</h3>
+        <p>${escapeHtml(message)}</p>
+        <p>${escapeHtml(chapterItem.rawUrl)}</p>
+        <button type="button" class="btn btn-primary" id="btnRetryChapter">
+          <i class="fa-solid fa-rotate-right"></i> ลองโหลดใหม่
+        </button>
+      </div>
+    `;
+    elements.wordCountBadge.innerHTML = `<i class="fa-solid fa-file-lines"></i> - คำ`;
+    elements.readTimeBadge.innerHTML = `<i class="fa-solid fa-clock"></i> - นาที`;
+
+    const retryBtn = document.getElementById('btnRetryChapter');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', () => {
+        const idx = state.filteredChapters.indexOf(chapterItem);
+        if (idx !== -1) loadChapter(idx);
+      });
+    }
+
+    updateBookmarkUI(chapterItem.id);
   }
 
   /* ==========================================================================
@@ -524,7 +683,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function sortChapters() {
     state.chapters.sort((a, b) => {
-      return state.sortOrder === 'asc' ? a.number - b.number : b.number - a.number;
+      const diff = state.sortOrder === 'asc' ? a.number - b.number : b.number - a.number;
+      return diff !== 0 ? diff : a.name.localeCompare(b.name);
     });
     filterChapters();
   }
@@ -533,13 +693,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const query = elements.searchInput.value.trim().toLowerCase();
     
     state.filteredChapters = state.chapters.filter(ch => {
-      const matchSearch = ch.name.toLowerCase().includes(query) || 
-                          `บทที่ ${ch.number}`.includes(query);
+      const label = `ตอนที่ ${ch.number} บทที่ ${ch.number} ${ch.name}`.toLowerCase();
+      const matchSearch = !query || label.includes(query);
       const matchBookmark = !state.filterBookmarked || state.bookmarks.includes(ch.id);
       return matchSearch && matchBookmark;
     });
 
+    // Keep the index pointing at the same chapter after the list changes (-1 if filtered out)
+    state.currentChapterIndex = state.currentChapterItem
+      ? state.filteredChapters.indexOf(state.currentChapterItem)
+      : -1;
+
     renderSidebarList();
+    updateNavigationButtons();
   }
 
   function renderSidebarList() {
@@ -566,7 +732,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="chapter-item-info">
           <div class="chapter-item-title">
             ${isBookmarked ? '<i class="fa-solid fa-bookmark" style="color:var(--accent-cyan); margin-right:4px;"></i>' : ''}
-            ตอนที่ ${ch.number}: ${ch.name}
+            ตอนที่ ${ch.number}: ${escapeHtml(ch.name)}
           </div>
           <div class="chapter-item-sub">
             ${isRead ? '<i class="fa-solid fa-check" style="color:#22c55e;"></i> อ่านแล้ว' : 'ยังไม่ได้อ่าน'}
@@ -677,13 +843,39 @@ document.addEventListener('DOMContentLoaded', () => {
     URL.revokeObjectURL(url);
   }
 
+  function getCacheKey() {
+    return `gnr_cache_${state.repo}_${state.branch}_${state.path}`;
+  }
+
+  function readChaptersCache() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(getCacheKey()) || 'null');
+      return Array.isArray(cached) ? cached : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function saveChaptersToCache() {
-    localStorage.setItem(`gnr_cache_${state.repo}_${state.branch}`, JSON.stringify(state.chapters));
+    const key = getCacheKey();
+    try {
+      localStorage.setItem(key, JSON.stringify(state.chapters));
+    } catch (e) {
+      // Storage full: keep at least the chapter list so the app still opens offline
+      try {
+        const listOnly = state.chapters.map(ch => ({ ...ch, content: null, loaded: false }));
+        localStorage.setItem(key, JSON.stringify(listOnly));
+      } catch (e2) {
+        console.warn('Unable to save offline cache:', e2);
+      }
+    }
   }
 
   function clearAllCache() {
     if (confirm('คุณต้องการล้างแคชออฟไลน์ทั้งหมดหรือไม่? (ข้อมูลบทที่เคยดึงจะถูกลบและดึงใหม่จาก GitHub)')) {
-      localStorage.removeItem(`gnr_cache_${state.repo}_${state.branch}`);
+      Object.keys(localStorage)
+        .filter(key => key.startsWith('gnr_cache_'))
+        .forEach(key => localStorage.removeItem(key));
       localStorage.removeItem('gnr_history');
       state.readHistory = {};
       showToast('ล้างแคชออฟไลน์เรียบร้อยแล้ว', 'info');
@@ -721,7 +913,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     localStorage.setItem('gnr_bookmarks', JSON.stringify(state.bookmarks));
     updateBookmarkUI(chId);
-    renderSidebarList();
+    filterChapters(); // Re-apply the bookmark filter if it is active
   }
 
   // --- TTS Core System (Paragraph-Chunked Engine) ---
@@ -782,6 +974,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function stopAllAudioEngines() {
+    state.ttsSession++;
     state.ttsState = 'paused';
     state.ttsSubChunks = [];
     state.ttsSubIndex = 0;
@@ -805,6 +998,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (state.cloudAudio) {
       try {
+        state.cloudAudio.onended = null;
+        state.cloudAudio.onerror = null;
         state.cloudAudio.pause();
         state.cloudAudio.currentTime = 0;
       } catch (e) {}
@@ -1013,9 +1208,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const subChunkText = state.ttsSubChunks[state.ttsSubIndex];
     const mode = state.selectedVoiceURI || 'rv_th_female';
+    const session = state.ttsSession;
 
     const onSubChunkEnd = () => {
-      if (state.ttsState === 'playing') {
+      // Ignore late callbacks from audio that was stopped/replaced (pause, speed or voice change)
+      if (session === state.ttsSession && state.ttsState === 'playing') {
         state.ttsSubIndex++;
         speakCurrentParagraph();
       }
@@ -1033,16 +1230,37 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function speakViaResponsiveVoice(targetText, voiceName = 'Thai Female', onEndCallback) {
+    const session = state.ttsSession;
     if (window.responsiveVoice && typeof window.responsiveVoice.speak === 'function') {
       try {
+        let started = false;
+        let finished = false;
+        const fallback = () => {
+          if (finished || session !== state.ttsSession) return;
+          finished = true;
+          try { window.responsiveVoice.cancel(); } catch (e) {}
+          speakViaSoundOfText(targetText, onEndCallback);
+        };
+        // An invalid API key or blocked voice makes ResponsiveVoice silently do nothing — don't hang forever
+        const watchdog = setTimeout(() => {
+          if (!started) fallback();
+        }, 5000);
+
         window.responsiveVoice.speak(targetText, voiceName, {
           rate: state.ttsRate,
           volume: state.ttsMuted ? 0 : 1,
+          onstart: () => {
+            started = true;
+          },
           onend: () => {
+            clearTimeout(watchdog);
+            if (finished || session !== state.ttsSession) return;
+            finished = true;
             if (onEndCallback) onEndCallback();
           },
           onerror: () => {
-            speakViaSoundOfText(targetText, onEndCallback);
+            clearTimeout(watchdog);
+            fallback();
           }
         });
         return;
@@ -1054,6 +1272,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function speakViaSoundOfText(targetText, onEndCallback) {
+    const session = state.ttsSession;
     let audioUrl = '';
 
     try {
@@ -1073,47 +1292,47 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (e) {}
 
+    // Paused/stopped while waiting for the server: don't start playing afterwards
+    if (session !== state.ttsSession) return;
+
     if (!audioUrl) {
       audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(targetText)}`;
     }
 
-    if (state.cloudAudio) state.cloudAudio.pause();
-    state.cloudAudio = new Audio(audioUrl);
-    state.cloudAudio.playbackRate = state.ttsRate;
-    state.cloudAudio.volume = state.ttsMuted ? 0 : 1;
-
-    state.cloudAudio.onended = () => {
-      if (onEndCallback) onEndCallback();
-    };
-
-    state.cloudAudio.onerror = () => {
-      speakViaWebSpeech(targetText, onEndCallback);
-    };
-
-    state.cloudAudio.play().catch(err => {
-      speakViaWebSpeech(targetText, onEndCallback);
-    });
+    playCloudAudio(audioUrl, targetText, onEndCallback);
   }
 
   function speakViaCloudAudio(targetText, onEndCallback) {
     const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(targetText)}`;
+    playCloudAudio(audioUrl, targetText, onEndCallback);
+  }
 
-    if (state.cloudAudio) state.cloudAudio.pause();
-    state.cloudAudio = new Audio(audioUrl);
-    state.cloudAudio.playbackRate = state.ttsRate;
-    state.cloudAudio.volume = state.ttsMuted ? 0 : 1;
+  function playCloudAudio(audioUrl, targetText, onEndCallback) {
+    const session = state.ttsSession;
 
-    state.cloudAudio.onended = () => {
+    if (state.cloudAudio) {
+      state.cloudAudio.onended = null;
+      state.cloudAudio.onerror = null;
+      state.cloudAudio.pause();
+    }
+    const audio = new Audio(audioUrl);
+    state.cloudAudio = audio;
+    audio.playbackRate = state.ttsRate;
+    audio.volume = state.ttsMuted ? 0 : 1;
+
+    let failed = false;
+    const fallback = () => {
+      if (failed || session !== state.ttsSession) return;
+      failed = true;
+      speakViaWebSpeech(targetText, onEndCallback);
+    };
+
+    audio.onended = () => {
+      if (session !== state.ttsSession) return;
       if (onEndCallback) onEndCallback();
     };
-
-    state.cloudAudio.onerror = () => {
-      speakViaWebSpeech(targetText, onEndCallback);
-    };
-
-    state.cloudAudio.play().catch(err => {
-      speakViaWebSpeech(targetText, onEndCallback);
-    });
+    audio.onerror = fallback;
+    audio.play().catch(fallback);
   }
 
   function speakViaWebSpeech(targetText, onEndCallback) {
@@ -1140,7 +1359,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (onEndCallback) onEndCallback();
     };
 
+    const session = state.ttsSession;
     utterance.onerror = (e) => {
+      if (session !== state.ttsSession) return;
       console.warn('WebSpeech error, fallback to ResponsiveVoice:', e);
       speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
     };
@@ -1211,6 +1432,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (state.ttsState === 'playing') {
+      // Stop the current voice first, otherwise the old and new speeds play on top of each other
+      const paragraphIndex = state.ttsCurrentIndex;
+      stopAllAudioEngines();
+      state.ttsState = 'playing';
+      state.ttsCurrentIndex = paragraphIndex;
       speakCurrentParagraph();
     }
     showToast(`ปรับความเร็วเสียงเป็น ${state.ttsRate}x`, 'info');
@@ -1437,7 +1663,7 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.contentArea.addEventListener('scroll', () => {
       const scrollTop = elements.contentArea.scrollTop;
       const scrollHeight = elements.contentArea.scrollHeight - elements.contentArea.clientHeight;
-      const progress = Math.min(100, Math.max(0, (scrollTop / scrollHeight) * 100));
+      const progress = scrollHeight > 0 ? Math.min(100, Math.max(0, (scrollTop / scrollHeight) * 100)) : 0;
       elements.progressBar.style.width = `${progress}%`;
     });
 
@@ -1466,9 +1692,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     elements.btnSaveSettings.addEventListener('click', () => {
-      state.repo = elements.repoInput.value.trim() || 'OniSo33/Onisoo';
-      state.branch = elements.branchInput.value.trim() || 'claude/data-storage-location-85vk0x';
-      state.path = elements.pathInput.value.trim() || 'chapters';
+      state.repo = elements.repoInput.value.trim() || DEFAULT_REPO;
+      state.branch = elements.branchInput.value.trim() || DEFAULT_BRANCH;
+      state.path = elements.pathInput.value.trim() || DEFAULT_PATH;
       state.token = elements.tokenInput.value.trim();
       state.fontFamily = elements.fontFamilySelect.value;
       state.lineHeight = elements.lineHeightSelect.value;
