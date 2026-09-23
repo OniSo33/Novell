@@ -67,7 +67,6 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // HTML5 Cloud Audio Engine & iOS Native Speech Engine
     cloudAudio: new Audio(),
-    useCloudTTS: localStorage.getItem('gnr_useCloudTTS') === 'true', // Defaults to false for 100% native iOS Safari sound
     iosKeepAliveTimer: null,
     
     // Background Audio Keeper for Screen Lock
@@ -868,10 +867,50 @@ document.addEventListener('DOMContentLoaded', () => {
      Exporters & Cache Management
      ========================================================================== */
 
-  function exportAllAsTxt() {
+  // "Export all" must contain every chapter's real text, not just the ones already opened —
+  // fetch whatever hasn't been read yet (in small concurrent batches) before building the file
+  async function ensureAllChaptersLoaded(onProgress) {
+    const missing = state.chapters.filter(ch => !ch.content);
+    if (missing.length === 0) return { failed: 0 };
+
+    let done = 0;
+    let failed = 0;
+    const batchSize = 8;
+    for (let i = 0; i < missing.length; i += batchSize) {
+      const batch = missing.slice(i, i + batchSize);
+      await Promise.all(batch.map(async ch => {
+        try {
+          const res = await fetch(ch.rawUrl);
+          if (res.ok) {
+            ch.content = await res.text();
+            ch.loaded = true;
+          } else {
+            failed++;
+          }
+        } catch (e) {
+          failed++;
+        }
+        done++;
+        if (onProgress) onProgress(done, missing.length);
+      }));
+    }
+    saveChaptersToCache();
+    return { failed };
+  }
+
+  async function exportAllAsTxt() {
     if (state.chapters.length === 0) {
       showToast('ไม่มีข้อมูลบทนิยายสำหรับส่งออก', 'error');
       return;
+    }
+
+    setLoadingState(true, 'กำลังดึงเนื้อหาทุกบทก่อนส่งออก...');
+    const { failed } = await ensureAllChaptersLoaded((done, total) => {
+      setLoadingState(true, `กำลังดึงเนื้อหาทุกบทก่อนส่งออก... (${done}/${total})`);
+    });
+    setLoadingState(false, `ดึงข้อมูลครบ 100% (${state.chapters.length} บท)`);
+    if (failed > 0) {
+      showToast(`โหลดเนื้อหาไม่สำเร็จ ${failed} บท จะถูกทำเครื่องหมายไว้ในไฟล์ที่ส่งออก`, 'error');
     }
 
     let fullText = `===================================================\n`;
@@ -892,10 +931,19 @@ document.addEventListener('DOMContentLoaded', () => {
     showToast('ดาวน์โหลดไฟล์ TXT รวมบทสำเร็จ!', 'success');
   }
 
-  function exportAllAsJson() {
+  async function exportAllAsJson() {
     if (state.chapters.length === 0) {
       showToast('ไม่มีข้อมูลบทนิยายสำหรับส่งออก', 'error');
       return;
+    }
+
+    setLoadingState(true, 'กำลังดึงเนื้อหาทุกบทก่อนส่งออก...');
+    const { failed } = await ensureAllChaptersLoaded((done, total) => {
+      setLoadingState(true, `กำลังดึงเนื้อหาทุกบทก่อนส่งออก... (${done}/${total})`);
+    });
+    setLoadingState(false, `ดึงข้อมูลครบ 100% (${state.chapters.length} บท)`);
+    if (failed > 0) {
+      showToast(`โหลดเนื้อหาไม่สำเร็จ ${failed} บท จะมี content เป็น null ในไฟล์ที่ส่งออก`, 'error');
     }
 
     const jsonExport = {
@@ -1098,11 +1146,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function stopAllAudioEngines() {
+  // resetProgress=false preserves the current paragraph/sub-chunk position (used by pause, so
+  // resume continues the same sub-chunk instead of restarting the whole paragraph)
+  function stopAllAudioEngines(resetProgress = true) {
     state.ttsSession++;
     state.ttsState = 'paused';
-    state.ttsSubChunks = [];
-    state.ttsSubIndex = 0;
+    if (resetProgress) {
+      state.ttsSubChunks = [];
+      state.ttsSubIndex = 0;
+    }
 
     if (state.iosKeepAliveTimer) {
       clearInterval(state.iosKeepAliveTimer);
@@ -1679,11 +1731,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Re-speak the current sub-chunk with new settings (speed/voice/mute) without skipping text
   function restartCurrentChunk() {
-    const chunks = state.ttsSubChunks;
-    const subIndex = state.ttsSubIndex;
-    stopAllAudioEngines();
-    state.ttsSubChunks = chunks;
-    state.ttsSubIndex = subIndex;
+    stopAllAudioEngines(false); // keep ttsSubChunks/ttsSubIndex so playback resumes at the same sub-chunk
     beginPlayback();
   }
 
@@ -1700,7 +1748,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function pauseTTSReading() {
     if (state.ttsState === 'playing') {
-      stopAllAudioEngines();
+      stopAllAudioEngines(false); // keep position so resume continues the same sub-chunk, not the whole paragraph
       releaseWakeLock();
       state.ttsState = 'paused';
       updateTTSUI();
