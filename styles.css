@@ -1002,6 +1002,10 @@ code, pre {
   border-radius: var(--radius-lg);
   width: 90%;
   max-width: 500px;
+  max-height: 90vh;
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
   box-shadow: var(--shadow-md);
   overflow: hidden;
 }
@@ -1027,6 +1031,8 @@ code, pre {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-y: auto; /* Keep the save button reachable on short screens */
+  min-height: 0;
 }
 
 .setting-item {

@@ -10,6 +10,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const DEFAULT_BRANCH = 'claude/read-4d3wcj';
   const DEFAULT_PATH = 'chapters';
 
+  // Free voice (no sign-up) is the default; ResponsiveVoice is only used when an API key is set
+  const FREE_DEFAULT_VOICE = 'soundoftext_th';
+
+  function getInitialVoice() {
+    const saved = localStorage.getItem('gnr_ttsVoiceURI');
+    if (!saved || saved === 'default_th') return FREE_DEFAULT_VOICE;
+    if (saved.startsWith('rv_th') && !localStorage.getItem('gnr_rvKey')) return FREE_DEFAULT_VOICE;
+    return saved;
+  }
+
   // Config State
   const state = {
     repo: localStorage.getItem('gnr_repo') || DEFAULT_REPO,
@@ -42,7 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ttsState: 'idle', // 'idle', 'playing', 'paused'
     ttsMuted: false,
     ttsRate: parseFloat(localStorage.getItem('gnr_ttsRate') || '1.0'),
-    selectedVoiceURI: (localStorage.getItem('gnr_ttsVoiceURI') && localStorage.getItem('gnr_ttsVoiceURI') !== 'native_th' && localStorage.getItem('gnr_ttsVoiceURI') !== 'default_th') ? localStorage.getItem('gnr_ttsVoiceURI') : 'rv_th_female',
+    selectedVoiceURI: getInitialVoice(),
     voices: [],
     ttsCurrentIndex: 0,
     ttsParagraphElements: [],
@@ -51,6 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
     synth: window.speechSynthesis || null,
     currentUtterance: null,
     ttsSession: 0, // Bumped on every stop so late callbacks from old audio are ignored
+    ttsEngineAttempts: 0, // Engine fallbacks tried for the current chunk (prevents endless fallback loops)
     
     // HTML5 Cloud Audio Engine & iOS Native Speech Engine
     cloudAudio: new Audio(),
@@ -1078,56 +1089,56 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function populateVoices() {
     elements.ttsVoiceSelect.innerHTML = '';
+    const addOption = (value, text) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = text;
+      elements.ttsVoiceSelect.appendChild(option);
+    };
 
-    // Option 1: ResponsiveVoice Thai Female (Best & Most Reliable for iPhone)
-    const optRvFemale = document.createElement('option');
-    optRvFemale.value = 'rv_th_female';
-    const rvNote = state.rvKey ? 'ชัดเจน แนะนำสำหรับ iPhone' : 'ต้องใส่ API Key ในตั้งค่า';
-    optRvFemale.textContent = `🇹🇭 เสียงผู้หญิง (ResponsiveVoice - ${rvNote})`;
-    elements.ttsVoiceSelect.appendChild(optRvFemale);
+    // Free engines (no API key needed)
+    addOption('soundoftext_th', '🔊 เสียงอ่าน MP3 (ฟรี — SoundOfText, อ่านต่อได้ตอนล็อกจอ)');
+    addOption('cloud_th', '☁️ เสียงอ่าน Google (ฟรี)');
+    addOption('native_th', '📱 เสียงของเครื่อง (ฟรี — WebSpeech)');
 
-    // Option 2: ResponsiveVoice Thai Male
-    const optRvMale = document.createElement('option');
-    optRvMale.value = 'rv_th_male';
-    optRvMale.textContent = `🇹🇭 เสียงผู้ชาย (ResponsiveVoice - ${rvNote})`;
-    elements.ttsVoiceSelect.appendChild(optRvMale);
-
-    // Option 3: SoundOfText MP3 Cloud Stream
-    const optSoundOfText = document.createElement('option');
-    optSoundOfText.value = 'soundoftext_th';
-    optSoundOfText.textContent = '🔊 เสียงอ่าน MP3 (SoundOfText Cloud Stream - เสียงหยุดทันที 100%)';
-    elements.ttsVoiceSelect.appendChild(optSoundOfText);
-
-    // Option 4: Native System Voice (WebSpeech)
-    const optNative = document.createElement('option');
-    optNative.value = 'native_th';
-    optNative.textContent = '📱 เสียงระบบ iOS/iPhone (WebSpeech System Voice)';
-    elements.ttsVoiceSelect.appendChild(optNative);
-
-    // Append any extra native voices if exposed by browser
+    // Extra Thai voices exposed by the browser/OS (free)
     if (state.synth) {
       state.voices = state.synth.getVoices();
-      const thaiVoices = state.voices.filter(v => 
-        v.lang.toLowerCase().includes('th') || 
-        v.name.toLowerCase().includes('thai') ||
-        v.lang.toLowerCase().startsWith('th')
+      const thaiVoices = state.voices.filter(v =>
+        v.lang.toLowerCase().startsWith('th') ||
+        v.name.toLowerCase().includes('thai')
       );
 
       thaiVoices.forEach((voice, index) => {
-        const option = document.createElement('option');
-        option.value = voice.voiceURI || voice.name;
         const cleanName = voice.name.replace(/th[-_]TH/gi, '').replace(/com\.apple\..*/gi, '').trim() || `เสียงพากย์ ${index + 1}`;
-        option.textContent = `🍎 เสียง iOS: ${cleanName}`;
-        elements.ttsVoiceSelect.appendChild(option);
+        addOption(voice.voiceURI || voice.name, `🍎 เสียงเครื่อง (ฟรี): ${cleanName}`);
       });
     }
 
-    if (state.selectedVoiceURI) {
-      elements.ttsVoiceSelect.value = state.selectedVoiceURI;
-    } else {
-      elements.ttsVoiceSelect.value = 'rv_th_female';
-      state.selectedVoiceURI = 'rv_th_female';
+    // ResponsiveVoice needs a registered API key, so only offer it when one is set
+    if (state.rvKey) {
+      addOption('rv_th_female', '🇹🇭 เสียงผู้หญิง (ResponsiveVoice)');
+      addOption('rv_th_male', '🇹🇭 เสียงผู้ชาย (ResponsiveVoice)');
     }
+
+    elements.ttsVoiceSelect.value = state.selectedVoiceURI;
+    if (elements.ttsVoiceSelect.value !== state.selectedVoiceURI && state.selectedVoiceURI.startsWith('rv_th')) {
+      // ResponsiveVoice chosen earlier but no key anymore: switch to the free default
+      state.selectedVoiceURI = FREE_DEFAULT_VOICE;
+      localStorage.setItem('gnr_ttsVoiceURI', FREE_DEFAULT_VOICE);
+      elements.ttsVoiceSelect.value = FREE_DEFAULT_VOICE;
+    }
+  }
+
+  // Each engine falls back to another on error; cap the chain so a dead network can't loop forever
+  function allowEngineAttempt() {
+    state.ttsEngineAttempts++;
+    if (state.ttsEngineAttempts <= 4) return true;
+    if (state.ttsState !== 'idle') {
+      resetTTSState();
+      showToast('ไม่สามารถเล่นเสียงอ่านได้ — ตรวจสอบอินเทอร์เน็ต หรือเปลี่ยนระบบเสียง', 'error');
+    }
+    return false;
   }
 
   function handleTTSTest() {
@@ -1135,10 +1146,11 @@ document.addEventListener('DOMContentLoaded', () => {
     showToast('🔊 กำลังทดสอบระบบเสียง...', 'info');
 
     const testMsg = 'ทดสอบระบบเสียงอ่านภาษาไทยบน ไอโฟน สำเร็จแล้วครับ';
-    const mode = state.selectedVoiceURI || 'rv_th_female';
+    const mode = state.selectedVoiceURI || FREE_DEFAULT_VOICE;
 
     stopAllAudioEngines();
     state.ttsState = 'playing';
+    state.ttsEngineAttempts = 0;
 
     if (mode.startsWith('rv_th')) {
       speakViaResponsiveVoice(testMsg, mode === 'rv_th_male' ? 'Thai Male' : 'Thai Female');
@@ -1265,8 +1277,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const subChunkText = state.ttsSubChunks[state.ttsSubIndex];
-    const mode = state.selectedVoiceURI || 'rv_th_female';
+    const mode = state.selectedVoiceURI || FREE_DEFAULT_VOICE;
     const session = state.ttsSession;
+    state.ttsEngineAttempts = 0;
 
     const onSubChunkEnd = () => {
       // Ignore late callbacks from audio that was stopped/replaced (pause, speed or voice change)
@@ -1288,6 +1301,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function speakViaResponsiveVoice(targetText, voiceName = 'Thai Female', onEndCallback) {
+    if (!allowEngineAttempt()) return;
     const session = state.ttsSession;
     if (window.responsiveVoice && typeof window.responsiveVoice.speak === 'function') {
       try {
@@ -1330,6 +1344,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function speakViaSoundOfText(targetText, onEndCallback) {
+    if (!allowEngineAttempt()) return;
     const session = state.ttsSession;
     let audioUrl = '';
 
@@ -1361,6 +1376,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function speakViaCloudAudio(targetText, onEndCallback) {
+    if (!allowEngineAttempt()) return;
     const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=${encodeURIComponent(targetText)}`;
     playCloudAudio(audioUrl, targetText, onEndCallback);
   }
@@ -1394,6 +1410,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function speakViaWebSpeech(targetText, onEndCallback) {
+    if (!allowEngineAttempt()) return;
     if (!state.synth) {
       speakViaResponsiveVoice(targetText, 'Thai Female', onEndCallback);
       return;

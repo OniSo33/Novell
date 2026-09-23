@@ -14,7 +14,7 @@
   <!-- FontAwesome Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   
-  <link rel="stylesheet" href="styles.css?v=1.4.0">
+  <link rel="stylesheet" href="styles.css?v=1.5.0">
 </head>
 <body class="theme-cyber-dark">
 
@@ -370,9 +370,9 @@
         </div>
 
         <div class="setting-item">
-          <label for="rvKeyInput">ResponsiveVoice API Key (สำหรับเสียงอ่าน ResponsiveVoice)</label>
+          <label for="rvKeyInput">ResponsiveVoice API Key (ไม่บังคับ)</label>
           <input type="text" id="rvKeyInput" placeholder="สมัครฟรีที่ responsivevoice.org" autocomplete="off">
-          <small class="help-text">ถ้าไม่ใส่ ระบบจะใช้เสียง SoundOfText / เสียงของเครื่องแทนอัตโนมัติ</small>
+          <small class="help-text">ไม่ต้องใส่ก็ใช้เสียงอ่านได้ฟรี (SoundOfText / Google / เสียงของเครื่อง) — ใส่เฉพาะถ้าอยากใช้เสียง ResponsiveVoice เพิ่ม</small>
         </div>
 
         <div class="setting-item">
@@ -406,6 +406,6 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <!-- ResponsiveVoice is loaded by app.js only when an API key is set in settings -->
-  <script src="app.js?v=1.4.0"></script>
+  <script src="app.js?v=1.5.0"></script>
 </body>
 </html>
