@@ -15,7 +15,10 @@ document.addEventListener('DOMContentLoaded', () => {
     repo: localStorage.getItem('gnr_repo') || DEFAULT_REPO,
     branch: localStorage.getItem('gnr_branch') || DEFAULT_BRANCH,
     path: localStorage.getItem('gnr_path') || DEFAULT_PATH,
-    token: localStorage.getItem('gnr_token') || '',
+    // Token lives only in this tab (sessionStorage) unless the user opts in to remember it
+    token: sessionStorage.getItem('gnr_token') || localStorage.getItem('gnr_token') || '',
+    rememberToken: !!localStorage.getItem('gnr_token'),
+    rvKey: localStorage.getItem('gnr_rvKey') || '',
     
     chapters: [],
     filteredChapters: [],
@@ -144,6 +147,8 @@ document.addEventListener('DOMContentLoaded', () => {
     branchInput: document.getElementById('branchInput'),
     pathInput: document.getElementById('pathInput'),
     tokenInput: document.getElementById('tokenInput'),
+    rememberTokenCheck: document.getElementById('rememberTokenCheck'),
+    rvKeyInput: document.getElementById('rvKeyInput'),
     fontFamilySelect: document.getElementById('fontFamilySelect'),
     lineHeightSelect: document.getElementById('lineHeightSelect'),
     
@@ -206,6 +211,28 @@ document.addEventListener('DOMContentLoaded', () => {
     return { branch: segments.slice(0, -1).join('/'), path: segments[segments.length - 1] };
   }
 
+  function saveToken() {
+    sessionStorage.removeItem('gnr_token');
+    localStorage.removeItem('gnr_token');
+    if (!state.token) return;
+    if (state.rememberToken) {
+      localStorage.setItem('gnr_token', state.token);
+    } else {
+      sessionStorage.setItem('gnr_token', state.token);
+    }
+  }
+
+  // ResponsiveVoice needs a real API key; without one the other engines are used instead
+  function loadResponsiveVoice(key) {
+    if (!key || window.responsiveVoice || document.getElementById('rvScript')) return;
+    const script = document.createElement('script');
+    script.id = 'rvScript';
+    script.src = `https://code.responsivevoice.org/responsivevoice.js?key=${encodeURIComponent(key)}`;
+    script.onload = () => populateVoices();
+    script.onerror = () => showToast('โหลด ResponsiveVoice ไม่สำเร็จ — ใช้เสียงระบบอื่นแทน', 'error');
+    document.head.appendChild(script);
+  }
+
   function init() {
     applyTheme(state.theme);
     applyTypography();
@@ -216,6 +243,9 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.branchInput.value = state.branch;
     elements.pathInput.value = state.path;
     elements.tokenInput.value = state.token;
+    elements.rememberTokenCheck.checked = state.rememberToken;
+    elements.rvKeyInput.value = state.rvKey;
+    loadResponsiveVoice(state.rvKey);
     elements.fontFamilySelect.value = state.fontFamily;
     elements.lineHeightSelect.value = state.lineHeight;
 
@@ -1052,13 +1082,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Option 1: ResponsiveVoice Thai Female (Best & Most Reliable for iPhone)
     const optRvFemale = document.createElement('option');
     optRvFemale.value = 'rv_th_female';
-    optRvFemale.textContent = '🇹🇭 เสียงผู้หญิง (ResponsiveVoice - ชัดเจน แนะนำสำหรับ iPhone)';
+    const rvNote = state.rvKey ? 'ชัดเจน แนะนำสำหรับ iPhone' : 'ต้องใส่ API Key ในตั้งค่า';
+    optRvFemale.textContent = `🇹🇭 เสียงผู้หญิง (ResponsiveVoice - ${rvNote})`;
     elements.ttsVoiceSelect.appendChild(optRvFemale);
 
     // Option 2: ResponsiveVoice Thai Male
     const optRvMale = document.createElement('option');
     optRvMale.value = 'rv_th_male';
-    optRvMale.textContent = '🇹🇭 เสียงผู้ชาย (ResponsiveVoice - ชัดเจน แนะนำสำหรับ iPhone)';
+    optRvMale.textContent = `🇹🇭 เสียงผู้ชาย (ResponsiveVoice - ${rvNote})`;
     elements.ttsVoiceSelect.appendChild(optRvMale);
 
     // Option 3: SoundOfText MP3 Cloud Stream
@@ -1401,6 +1432,33 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // Starts (or restarts) audio at the current paragraph/sub-chunk, including the lock-screen keep-alive
+  function beginPlayback() {
+    state.ttsState = 'playing';
+    unlockAudioContextForIOS();
+
+    if (state.iosKeepAliveTimer) clearInterval(state.iosKeepAliveTimer);
+    state.iosKeepAliveTimer = setInterval(() => {
+      if (state.ttsState === 'playing' && state.synth && state.synth.paused) {
+        state.synth.resume();
+      }
+    }, 3000);
+
+    if (state.silentAudio) state.silentAudio.play().catch(() => {});
+    updateTTSUI();
+    speakCurrentParagraph();
+  }
+
+  // Re-speak the current sub-chunk with new settings (speed/voice/mute) without skipping text
+  function restartCurrentChunk() {
+    const chunks = state.ttsSubChunks;
+    const subIndex = state.ttsSubIndex;
+    stopAllAudioEngines();
+    state.ttsSubChunks = chunks;
+    state.ttsSubIndex = subIndex;
+    beginPlayback();
+  }
+
   function pauseTTSReading() {
     if (state.ttsState === 'playing') {
       stopAllAudioEngines();
@@ -1413,19 +1471,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function resumeTTSReading() {
     if (state.ttsState === 'paused') {
       stopAllAudioEngines();
-      state.ttsState = 'playing';
-      unlockAudioContextForIOS();
-      
-      if (state.iosKeepAliveTimer) clearInterval(state.iosKeepAliveTimer);
-      state.iosKeepAliveTimer = setInterval(() => {
-        if (state.ttsState === 'playing' && state.synth && state.synth.paused) {
-          state.synth.resume();
-        }
-      }, 3000);
-
-      if (state.silentAudio) state.silentAudio.play().catch(() => {});
-      updateTTSUI();
-      speakCurrentParagraph();
+      beginPlayback();
       showToast(`อ่านต่อจากย่อหน้าที่ ${state.ttsCurrentIndex + 1}...`, 'info');
     }
   }
@@ -1439,11 +1485,14 @@ document.addEventListener('DOMContentLoaded', () => {
   function toggleTTSMute() {
     state.ttsMuted = !state.ttsMuted;
     
+    const cloudPlaying = state.cloudAudio && !state.cloudAudio.paused;
     if (state.cloudAudio) {
       state.cloudAudio.volume = state.ttsMuted ? 0 : 1;
     }
-    if (state.currentUtterance) {
-      state.currentUtterance.volume = state.ttsMuted ? 0 : 1;
+
+    // Speech engines can't change volume mid-sentence, so re-speak the current chunk at the new volume
+    if (state.ttsState === 'playing' && !cloudPlaying) {
+      restartCurrentChunk();
     }
 
     updateTTSUI();
@@ -1460,11 +1509,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (state.ttsState === 'playing') {
       // Stop the current voice first, otherwise the old and new speeds play on top of each other
-      const paragraphIndex = state.ttsCurrentIndex;
-      stopAllAudioEngines();
-      state.ttsState = 'playing';
-      state.ttsCurrentIndex = paragraphIndex;
-      speakCurrentParagraph();
+      restartCurrentChunk();
     }
     showToast(`ปรับความเร็วเสียงเป็น ${state.ttsRate}x`, 'info');
   }
@@ -1474,9 +1519,7 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem('gnr_ttsVoiceURI', newVoiceVal);
 
     if (state.ttsState === 'playing') {
-      stopAllAudioEngines();
-      state.ttsState = 'playing';
-      speakCurrentParagraph();
+      restartCurrentChunk();
     }
     showToast(`เปลี่ยนระบบเสียงเป็น: ${elements.ttsVoiceSelect.options[elements.ttsVoiceSelect.selectedIndex]?.text || newVoiceVal}`, 'success');
   }
@@ -1727,13 +1770,25 @@ document.addEventListener('DOMContentLoaded', () => {
       state.branch = elements.branchInput.value.trim() || DEFAULT_BRANCH;
       state.path = elements.pathInput.value.trim() || DEFAULT_PATH;
       state.token = elements.tokenInput.value.trim();
+      state.rememberToken = elements.rememberTokenCheck.checked;
+      const newRvKey = elements.rvKeyInput.value.trim();
       state.fontFamily = elements.fontFamilySelect.value;
       state.lineHeight = elements.lineHeightSelect.value;
 
       localStorage.setItem('gnr_repo', state.repo);
       localStorage.setItem('gnr_branch', state.branch);
       localStorage.setItem('gnr_path', state.path);
-      localStorage.setItem('gnr_token', state.token);
+      saveToken();
+      if (newRvKey !== state.rvKey) {
+        state.rvKey = newRvKey;
+        localStorage.setItem('gnr_rvKey', state.rvKey);
+        if (window.responsiveVoice) {
+          showToast('เปลี่ยน ResponsiveVoice Key แล้ว — รีเฟรชหน้าเว็บเพื่อใช้คีย์ใหม่', 'info');
+        } else {
+          loadResponsiveVoice(state.rvKey);
+        }
+        populateVoices();
+      }
       localStorage.setItem('gnr_fontFamily', state.fontFamily);
       localStorage.setItem('gnr_lineHeight', state.lineHeight);
 

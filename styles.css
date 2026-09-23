@@ -1051,6 +1051,22 @@ code, pre {
   outline: none;
 }
 
+.setting-item .setting-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+  color: var(--text-sub);
+  cursor: pointer;
+}
+
+.setting-item .setting-check input {
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-cyan);
+}
+
 .help-text {
   font-size: 0.75rem;
   color: var(--text-sub);

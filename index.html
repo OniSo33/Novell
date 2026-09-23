@@ -14,7 +14,7 @@
   <!-- FontAwesome Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   
-  <link rel="stylesheet" href="styles.css?v=1.3.0">
+  <link rel="stylesheet" href="styles.css?v=1.4.0">
 </head>
 <body class="theme-cyber-dark">
 
@@ -361,8 +361,18 @@
 
         <div class="setting-item">
           <label for="tokenInput">GitHub Personal Access Token (ไม่บังคับ)</label>
-          <input type="password" id="tokenInput" placeholder="ghp_xxxxxxxxxxxx (ช่วยเพิ่ม Rate Limit API)">
-          <small class="help-text">ใส่ Token กรณีต้องการดึงข้อมูลถี่เกิน 60 ครั้ง/ชั่วโมง</small>
+          <input type="password" id="tokenInput" placeholder="github_pat_xxxx (ช่วยเพิ่ม Rate Limit API)" autocomplete="off">
+          <label class="setting-check" for="rememberTokenCheck">
+            <input type="checkbox" id="rememberTokenCheck">
+            <span>จำ Token ไว้ในเครื่องนี้ (ไม่ติ๊ก = ลบเมื่อปิดแท็บ)</span>
+          </label>
+          <small class="help-text">ใส่ Token กรณีต้องการดึงข้อมูลถี่เกิน 60 ครั้ง/ชั่วโมง — แนะนำ Fine-grained Token แบบอ่านอย่างเดียว (Contents: Read-only) เท่านั้น</small>
+        </div>
+
+        <div class="setting-item">
+          <label for="rvKeyInput">ResponsiveVoice API Key (สำหรับเสียงอ่าน ResponsiveVoice)</label>
+          <input type="text" id="rvKeyInput" placeholder="สมัครฟรีที่ responsivevoice.org" autocomplete="off">
+          <small class="help-text">ถ้าไม่ใส่ ระบบจะใช้เสียง SoundOfText / เสียงของเครื่องแทนอัตโนมัติ</small>
         </div>
 
         <div class="setting-item">
@@ -395,8 +405,7 @@
   <!-- Toast Notification Container -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <!-- ResponsiveVoice Mobile Speech Engine -->
-  <script src="https://code.responsivevoice.org/responsivevoice.js?key=FREE_KEY"></script>
-  <script src="app.js?v=1.3.0"></script>
+  <!-- ResponsiveVoice is loaded by app.js only when an API key is set in settings -->
+  <script src="app.js?v=1.4.0"></script>
 </body>
 </html>
