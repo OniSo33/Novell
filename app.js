@@ -1357,13 +1357,23 @@ document.addEventListener('DOMContentLoaded', () => {
     unlockAudioContextForIOS();
     showToast('🔊 กำลังทดสอบระบบเสียง...', 'info');
 
+    // Testing mid-chapter must not lose the reading position: remember the state, speak the test
+    // line, then either resume the same sub-chunk (was playing), stay paused, or go idle — never
+    // restart the whole chapter the way returning to 'idle' here used to force on the next press.
     const testMsg = 'ทดสอบระบบเสียงอ่านภาษาไทยบน ไอโฟน สำเร็จแล้วครับ';
-    stopAllAudioEngines();
+    const wasPlaying = state.ttsState === 'playing';
+    const wasPaused = state.ttsState === 'paused';
+    stopAllAudioEngines(false);
     state.ttsState = 'playing';
+    updateTTSUI();
     state.ttsEngineAttempts = 0;
-    speakWithMode(resolveVoiceMode(), testMsg, () => {
-      state.ttsState = 'idle';
-      updateTTSUI();
+    speakWithMode(getEffectiveMode(), testMsg, () => {
+      if (wasPlaying) {
+        restartCurrentChunk();
+      } else {
+        state.ttsState = wasPaused ? 'paused' : 'idle';
+        updateTTSUI();
+      }
     });
   }
 
