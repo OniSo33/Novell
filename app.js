@@ -532,14 +532,25 @@ document.addEventListener('DOMContentLoaded', () => {
     renderEmptyState('ติดขัด GitHub Rate Limit (60 ครั้ง/ชม.): กรุณาใส่ GitHub Token ใน ⚙️ ตั้งค่า เพื่อดึงนิยายทุกตอนได้ไม่จำกัด');
   }
 
-  async function loadChapter(index) {
+  // continueTTS: used by the "finished a chapter -> start the next one" auto-advance below. It
+  // skips the usual "stop TTS on chapter change" reset (this chapter change IS the TTS continuing)
+  // and starts reading the new chapter automatically once it has loaded.
+  async function loadChapter(index, { continueTTS = false } = {}) {
     if (index < 0 || index >= state.filteredChapters.length) return;
     
     // Guards against a slower earlier request overwriting the chapter the user picked last
     const loadToken = ++state.chapterLoadToken;
 
-    // Never keep reading the previous chapter's paragraphs aloud over the new one
-    if (state.ttsState !== 'idle') {
+    if (continueTTS) {
+      // Stop the finished chapter's audio/timers but keep "playing" so the button doesn't flicker
+      // to paused while the next chapter's text is still being fetched
+      stopAllAudioEngines();
+      state.ttsState = 'playing';
+      state.ttsCurrentIndex = 0;
+      state.ttsSubIndex = 0;
+      state.ttsSubChunks = [];
+    } else if (state.ttsState !== 'idle') {
+      // Never keep reading the previous chapter's paragraphs aloud over the new one
       resetTTSState();
     }
 
@@ -592,10 +603,16 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('gnr_history', JSON.stringify(state.readHistory));
       renderSidebarList();
 
+      if (continueTTS) startTTSReading({ keepVoiceResolution: true });
+
     } catch (err) {
       if (loadToken !== state.chapterLoadToken) return;
       console.error('Error loading chapter content:', err);
       renderChapterError(chapterItem, err.message);
+      if (continueTTS) {
+        resetTTSState();
+        showToast('โหลดตอนถัดไปไม่สำเร็จ หยุดอ่านอัตโนมัติไว้ที่นี่', 'error');
+      }
     }
   }
 
@@ -1391,7 +1408,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  async function startTTSReading() {
+  // keepVoiceResolution: used when auto-advancing to the next chapter after this one finishes — that
+  // is still the same continuous listening session from the listener's point of view, so the engine/
+  // device voice picked at the start keeps being used rather than being re-resolved per chapter
+  async function startTTSReading({ keepVoiceResolution = false } = {}) {
     if (!state.currentChapterData) {
       showToast('ยังไม่มีเนื้อหาให้อ่าน', 'error');
       return;
@@ -1421,7 +1441,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     stopAllAudioEngines();
     state.ttsPrefetch = new Map();
-    resetVoiceResolution(); // fresh session: pick the engine/device voice once and keep it for the whole chapter
+    if (!keepVoiceResolution) resetVoiceResolution(); // fresh session: pick the voice once, keep it all session
     setupMediaSession();
     beginPlayback();
   }
@@ -1488,8 +1508,14 @@ document.addEventListener('DOMContentLoaded', () => {
         state.ttsCurrentIndex++;
       }
       if (!state.ttsParagraphElements || state.ttsCurrentIndex >= state.ttsParagraphElements.length) {
-        resetTTSState();
-        showToast('อ่านจบบทแล้ว', 'success');
+        const hasNextChapter = state.currentChapterIndex > -1 && state.currentChapterIndex < state.filteredChapters.length - 1;
+        if (hasNextChapter) {
+          showToast('จบตอนนี้แล้ว กำลังไปตอนถัดไป...', 'success');
+          loadChapter(state.currentChapterIndex + 1, { continueTTS: true });
+        } else {
+          resetTTSState();
+          showToast('อ่านจบทุกตอนที่มีแล้ว', 'success');
+        }
         return;
       }
       state.ttsSubChunks = getParagraphChunks(state.ttsCurrentIndex);
