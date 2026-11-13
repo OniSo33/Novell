@@ -5,6 +5,30 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Browser storage can be blocked (Google Colab output frames, private windows,
+  // "block third-party cookies"): touching it then throws and the whole app would
+  // fail to start. Fall back to in-memory storage so the reader still works.
+  function openStorage(name) {
+    try {
+      const store = window[name];
+      store.setItem('__gnr_probe', '1');
+      store.removeItem('__gnr_probe');
+      return store;
+    } catch (e) {
+      console.warn(`${name} unavailable, using in-memory storage:`, e && e.message);
+      const mem = {};
+      Object.defineProperties(mem, {
+        getItem: { value: k => (Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null) },
+        setItem: { value: (k, v) => { mem[k] = String(v); } },
+        removeItem: { value: k => { delete mem[k]; } },
+        clear: { value: () => Object.keys(mem).forEach(k => delete mem[k]) }
+      });
+      return mem;
+    }
+  }
+  const localStorage = openStorage('localStorage');
+  const sessionStorage = openStorage('sessionStorage');
+
   // Default Source (single place so settings reset and first load always agree)
   const DEFAULT_REPO = 'OniSo33/Onisoo';
   const DEFAULT_BRANCH = 'claude/read-4d3wcj';
